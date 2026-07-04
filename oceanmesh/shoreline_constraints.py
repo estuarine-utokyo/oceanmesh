@@ -120,6 +120,7 @@ def shoreline_to_fixed_points(
     *,
     min_points=5,
     dedupe_tol_frac=0.25,
+    return_edges=False,
 ):
     """Resample a :class:`Shoreline`'s mainland + inner polylines at the
     local target edge length and return the points as a ``pfix`` array
@@ -149,6 +150,7 @@ def shoreline_to_fixed_points(
     return polylines_to_fixed_points(
         polylines, edge_length,
         min_points=min_points, dedupe_tol_frac=dedupe_tol_frac,
+        return_edges=return_edges,
     )
 
 
@@ -158,6 +160,7 @@ def polylines_to_fixed_points(
     *,
     min_points=5,
     dedupe_tol_frac=0.25,
+    return_edges=False,
 ):
     """Like :func:`shoreline_to_fixed_points` but takes RAW polylines
     (a list of ``(n, 2)`` vertex arrays) directly.
@@ -172,6 +175,7 @@ def polylines_to_fixed_points(
     fh = getattr(edge_length, "eval", edge_length)
 
     chunks = []
+    closed_flags = []
     n_skipped = 0
     for k, poly in enumerate(polylines):
         if k and k % 200 == 0:
@@ -183,14 +187,33 @@ def polylines_to_fixed_points(
             n_skipped += 1
         else:
             chunks.append(out)
+            closed_flags.append(
+                bool(np.allclose(poly[0], poly[-1]))
+            )
     if not chunks:
         logger.info(
             "shoreline_to_fixed_points: no polylines survived "
             f"({n_skipped} below {min_points} local elements)"
         )
+        if return_edges:
+            return np.empty((0, 2)), np.empty((0, 2), dtype=int)
         return np.empty((0, 2))
 
     pfix = np.vstack(chunks)
+    edges = None
+    if return_edges:
+        # Chain edges per polyline (closing edge for rings). Built
+        # BEFORE dedupe; dedupe below then remaps indices.
+        edges = []
+        base = 0
+        for chunk, closed in zip(chunks, closed_flags):
+            n = len(chunk)
+            for k2 in range(n - 1):
+                edges.append((base + k2, base + k2 + 1))
+            if closed and n >= 3:
+                edges.append((base + n - 1, base))
+            base += n
+        edges = np.asarray(edges, dtype=int)
     # Deduplicate near-coincident points (chain junctions / touching
     # polylines) — generate_mesh snaps each pfix to its closest vertex,
     # so coincident pairs would fight over one vertex.
@@ -212,6 +235,24 @@ def polylines_to_fixed_points(
                 drop.add(j)
         if drop:
             keep = np.setdiff1d(np.arange(len(pfix)), np.fromiter(drop, int))
+            if return_edges:
+                # Remap chain edges onto the kept set: a dropped
+                # endpoint's edges reattach to its coincident twin.
+                remap = np.full(len(pfix), -1, dtype=int)
+                remap[keep] = np.arange(len(keep))
+                twin = {}
+                for i, j in pairs:
+                    if j in drop and remap[i] >= 0:
+                        twin[j] = remap[i]
+                    elif i in drop and remap[j] >= 0:
+                        twin[i] = remap[j]
+                def _m(v):
+                    return remap[v] if remap[v] >= 0 else twin.get(v, -1)
+                edges = np.asarray(
+                    [(_m(a), _m(b)) for a, b in edges], dtype=int,
+                )
+                edges = edges[(edges[:, 0] >= 0) & (edges[:, 1] >= 0)
+                              & (edges[:, 0] != edges[:, 1])]
             pfix = pfix[keep]
     except ImportError:  # pragma: no cover
         pass
@@ -220,4 +261,6 @@ def polylines_to_fixed_points(
         f"shoreline_to_fixed_points: {len(pfix)} fixed points from "
         f"{len(chunks)} polylines ({n_skipped} skipped as sub-resolution)"
     )
+    if return_edges:
+        return pfix, edges
     return pfix
