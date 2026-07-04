@@ -76,7 +76,12 @@ def _resample_at_local_h(pts, fh, min_points):
 
     s_list = [0.0]
     s = 0.0
-    while True:
+    # Hard bounds so a pathological sizing value can never hang the
+    # marching loop: steps are floored at 5 % of the midpoint size and
+    # the step count is capped at ~20x the nominal count.
+    h_floor = 0.05 * h_mid
+    max_steps = int(20.0 * total / h_mid) + 10
+    while len(s_list) < max_steps:
         xy = np.array([
             np.interp(s, cum, pts[:, 0]),
             np.interp(s, cum, pts[:, 1]),
@@ -84,11 +89,18 @@ def _resample_at_local_h(pts, fh, min_points):
         h = float(np.asarray(fh(xy[None, :])).ravel()[0])
         if not np.isfinite(h) or h <= 0:
             h = h_mid
+        h = max(h, h_floor)
         s_next = s + h
         if s_next >= total - 0.5 * h:
             break
         s_list.append(s_next)
         s = s_next
+    else:
+        logger.warning(
+            "shoreline polyline hit the %d-step cap (total length %.4g, "
+            "midpoint h %.4g); truncating resample",
+            max_steps, total, h_mid,
+        )
     if len(s_list) + 1 < min_points:
         return None
     s_arr = np.asarray(s_list + [total])
@@ -138,7 +150,11 @@ def shoreline_to_fixed_points(
 
     chunks = []
     n_skipped = 0
-    for poly in polylines:
+    for k, poly in enumerate(polylines):
+        if k and k % 200 == 0:
+            logger.info(
+                f"shoreline_to_fixed_points: {k}/{len(polylines)} polylines ..."
+            )
         out = _resample_at_local_h(poly, fh, min_points)
         if out is None:
             n_skipped += 1
@@ -161,7 +177,11 @@ def shoreline_to_fixed_points(
         from scipy.spatial import cKDTree
 
         tree = cKDTree(pfix)
-        pairs = tree.query_pairs(r=float(np.nanmax(h_at)) * dedupe_tol_frac)
+        # Radius from the MEDIAN local size: nanmax can be the far-field
+        # hmax, which explodes the candidate-pair count in dense areas.
+        pairs = tree.query_pairs(
+            r=float(np.nanmedian(h_at)) * dedupe_tol_frac,
+        )
         drop = set()
         for i, j in pairs:
             tol = dedupe_tol_frac * min(h_at[i], h_at[j])
