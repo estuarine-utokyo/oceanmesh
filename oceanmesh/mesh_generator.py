@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 import numpy as np
 import scipy.sparse as spsparse
+from _constrained_delaunay_class import (
+    ConstrainedDelaunayTriangulation as CDT,
+)
 from _delaunay_class import DelaunayTriangulation as DT
 from _fast_geometry import unique_edges
 from pyproj import CRS
@@ -284,6 +287,7 @@ def _parse_kwargs(kwargs):
             "max_iter",
             "seed",
             "pfix",
+            "egfix",
             "points",
             "domain",
             "edge_length",
@@ -771,6 +775,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         "max_iter": 50,
         "seed": 0,
         "pfix": None,
+        "egfix": None,
         "points": None,
         "min_edge_length": None,
         "plot": 999999,
@@ -800,6 +805,20 @@ def generate_mesh(domain, edge_length, **kwargs):
     deps = np.sqrt(np.finfo(np.double).eps)  # * np.amin(min_edge_length)
 
     pfix, _nfix = _unpack_pfix(_DIM, opts)
+    # egfix: (M, 2) indices into pfix. Constrained edges are FORCED
+    # into every retriangulation via the CGAL constrained Delaunay
+    # binding — the OceanMesh2D high-fidelity capability (MATLAB
+    # delaunayTriangulation constraints).
+    egfix = opts.get("egfix", None)
+    eg_segs = None
+    if egfix is not None and len(egfix) > 0:
+        egfix = np.asarray(egfix, dtype=int)
+        if egfix.max() >= len(pfix):
+            raise ValueError("egfix indices must reference pfix rows")
+        eg_segs = np.hstack(
+            [pfix[egfix[:, 0]], pfix[egfix[:, 1]]]
+        ).ravel().tolist()
+        logger.info(f"Constraining {len(egfix)} fixed edges (egfix)")
     lock_boundary = opts["lock_boundary"]
 
     if opts["points"] is None:
@@ -826,8 +845,13 @@ def generate_mesh(domain, edge_length, **kwargs):
         start = time.time()
 
         # (Re)-triangulation by the Delaunay algorithm
-        dt = DT()
-        dt.insert(p.ravel().tolist())
+        if eg_segs is not None:
+            dt = CDT()
+            dt.insert(p.ravel().tolist())
+            dt.insert_constraints(eg_segs)
+        else:
+            dt = DT()
+            dt.insert(p.ravel().tolist())
 
         # Get the current topology of the triangulation
         p, t = _get_topology(dt)

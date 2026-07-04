@@ -36,12 +36,14 @@ sys.path.append(os.path.dirname(__file__))
 is_called = [
     "_HamiltonJacobi",
     "_delaunay_class",
+    "_constrained_delaunay_class",
     "_fast_geometry",
 ]
 
 files = [
     "oceanmesh/cpp/HamiltonJacobi.cpp",
     "oceanmesh/cpp/delaunay_class.cpp",
+    "oceanmesh/cpp/constrained_delaunay_class.cpp",
     "oceanmesh/cpp/fast_geometry.cpp",
 ]
 
