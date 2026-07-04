@@ -9,7 +9,10 @@ if os.name == "nt":
     os.add_dll_directory(os.environ["CGAL_BIN"])
 
 from oceanmesh.boundary import identify_ocean_boundary_sections
-from oceanmesh.shoreline_constraints import shoreline_to_fixed_points
+from oceanmesh.shoreline_constraints import (
+    polylines_to_fixed_points,
+    shoreline_to_fixed_points,
+)
 from oceanmesh.clean import (
     delete_boundary_faces,
     delete_exterior_faces,
@@ -69,6 +72,7 @@ from .mesh_generator import (
 )
 
 __all__ = [
+    "polylines_to_fixed_points",
     "shoreline_to_fixed_points",
     "create_bbox",
     "Region",

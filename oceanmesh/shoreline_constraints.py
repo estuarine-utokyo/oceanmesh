@@ -31,7 +31,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["shoreline_to_fixed_points"]
+__all__ = ["polylines_to_fixed_points", "shoreline_to_fixed_points"]
 
 
 def _split_nan_delimited(arr):
@@ -143,10 +143,33 @@ def shoreline_to_fixed_points(
     -------
     ``(n, 2)`` float array (possibly empty) for ``generate_mesh(pfix=...)``.
     """
-    fh = getattr(edge_length, "eval", edge_length)
     polylines = []
     for attr in ("mainland", "inner"):
         polylines.extend(_split_nan_delimited(getattr(shoreline, attr, None)))
+    return polylines_to_fixed_points(
+        polylines, edge_length,
+        min_points=min_points, dedupe_tol_frac=dedupe_tol_frac,
+    )
+
+
+def polylines_to_fixed_points(
+    polylines,
+    edge_length,
+    *,
+    min_points=5,
+    dedupe_tol_frac=0.25,
+):
+    """Like :func:`shoreline_to_fixed_points` but takes RAW polylines
+    (a list of ``(n, 2)`` vertex arrays) directly.
+
+    Use this to constrain the mesh to the ORIGINAL (unsimplified)
+    coastline vectors — ``Shoreline.mainland``/``inner`` carry the
+    h0-simplified geometry, so constraints built from them can never
+    beat the simplification floor (observed: ~50 m at h0 = 300 m on
+    OSM Tokyo Bay). Equivalent in spirit to OceanMesh2D's
+    ``high_fidelity = 2`` but with local-h resampling.
+    """
+    fh = getattr(edge_length, "eval", edge_length)
 
     chunks = []
     n_skipped = 0
