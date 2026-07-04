@@ -612,12 +612,39 @@ def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False
             if stereo:
                 bSGP = pSGP
             else:
-                bSGP = bSGP.difference(pSGP)
+                # GEOS difference() raises TopologyException ("side
+                # location conflict") when either operand carries the
+                # near-degenerate rings that the tiny-buffer repairs
+                # above can produce; make_valid() both sides first.
+                from shapely.errors import GEOSException
+                from shapely.validation import make_valid
+
+                if not bSGP.is_valid:
+                    bSGP = make_valid(bSGP)
+                if not pSGP.is_valid:
+                    pSGP = make_valid(pSGP)
+                try:
+                    bSGP = bSGP.difference(pSGP)
+                except GEOSException:
+                    bSGP = make_valid(bSGP).difference(
+                        make_valid(pSGP.buffer(0))
+                    )
                 # Append polygon segment to mainland
                 mainland = np.vstack((mainland, poly))
                 # Clip polygon segment from boubox and regenerate path
 
     out = np.empty(shape=(0, 2))
+
+    if bSGP.geom_type == "GeometryCollection":
+        # make_valid()/difference() can emit collections holding
+        # degenerate lines/points; keep only the polygonal parts.
+        _polys = []
+        for _g in bSGP.geoms:
+            if _g.geom_type == "Polygon":
+                _polys.append(_g)
+            elif _g.geom_type == "MultiPolygon":
+                _polys.extend(_g.geoms)
+        bSGP = shapely.geometry.MultiPolygon(_polys)
 
     if bSGP.geom_type == "Polygon":
         # Convert to `MultiPolygon`
