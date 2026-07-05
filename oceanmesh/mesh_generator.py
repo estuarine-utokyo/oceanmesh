@@ -16,7 +16,7 @@ from pyproj import CRS
 
 from .clean import _external_topology
 from .edgefx import multiscale_sizing_function
-from .fix_mesh import fix_mesh
+from .fix_mesh import fix_mesh, simp_qual
 from .grid import Grid
 from .region import (
     to_lat_lon,
@@ -301,6 +301,13 @@ def _parse_kwargs(kwargs):
             "lock_boundary",
             "pseudo_dt",
             "stereo",
+            "force_function",
+            "improve",
+            "improve_every",
+            "qual_tol",
+            "exit_quality",
+            "heal_fixed_edges_every",
+            "rewind_threshold",
         }:
             pass
         else:
@@ -782,6 +789,14 @@ def generate_mesh(domain, edge_length, **kwargs):
         "lock_boundary": False,
         "pseudo_dt": 0.2,
         "stereo": False,
+        # OM2D meshgen.build parity (port plan P1):
+        "force_function": "persson_strang",  # or "bossen_heckbert"
+        "improve": True,           # in-loop add/delete improvement
+        "improve_every": 10,       # OM2D imp cadence
+        "qual_tol": 0.01,          # OM2D qual_tol stagnation gate
+        "exit_quality": 0.30,      # OM2D EXIT_QUALITY termination
+        "heal_fixed_edges_every": 2,  # OM2D delIT cadence
+        "rewind_threshold": 0.10,  # abort improvement on >10% loss
     }
     opts.update(kwargs)
     _parse_kwargs(kwargs)
@@ -841,6 +856,7 @@ def generate_mesh(domain, edge_length, **kwargs):
     logger.info(
         f"Commencing mesh generation with {N} vertices will perform {max_iter} iterations."
     )
+    qual_hist = []
     for count in range(max_iter):
         start = time.time()
 
@@ -871,6 +887,62 @@ def generate_mesh(domain, edge_length, **kwargs):
 
         # Remove points outside the domain
         t = _remove_triangles_outside(p, t, fd, geps)
+
+        # --- OM2D meshgen.build parity block (port plan P1) ---------
+        q = _al_quality(p, t)
+        qual_hist.append(
+            (float(np.mean(q)),
+             float(np.mean(q) - 3.0 * np.std(q)),
+             float(np.min(q)))
+        )
+
+        if (eg_segs is not None
+                and opts["heal_fixed_edges_every"] > 0
+                and (count + 1) % opts["heal_fixed_edges_every"] == 0):
+            # OM2D heal_fixed_edges: kill the free vertex of thin
+            # triangles that touch a constrained edge.
+            fixed_now = set()
+            for fix in pfix:
+                fixed_now.add(_closest_node(fix, p))
+            thin = np.where(q < 0.25)[0]
+            kill = set()
+            for e in thin:
+                tri = t[e]
+                on_fix = [v for v in tri if int(v) in fixed_now]
+                if len(on_fix) >= 2:
+                    free = [int(v) for v in tri
+                            if int(v) not in fixed_now]
+                    kill.update(free)
+            if kill:
+                logger.info(
+                    f"heal_fixed_edges: removing {len(kill)} vertices"
+                )
+                keep = np.setdiff1d(np.arange(len(p)),
+                                    np.fromiter(kill, int))
+                p = p[keep]
+                continue
+
+        at_checkpoint = (opts["improve_every"] > 0
+                         and (count + 1) % opts["improve_every"] == 0)
+        if at_checkpoint and qual_hist[-1][2] > opts["exit_quality"]:
+            p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
+            logger.info(
+                "Termination: minimum quality %.3f > %.2f",
+                qual_hist[-1][2], opts["exit_quality"],
+            )
+            return p, t
+
+        if (opts["improve"] and at_checkpoint
+                and count + 1 >= 2 * opts["improve_every"]):
+            prev = qual_hist[-opts["improve_every"]][0]
+            if abs(qual_hist[-1][0] - prev) < (
+                    opts["improve_every"] * opts["qual_tol"]):
+                p = _improve_points(
+                    p, t, fh, fd, geps, pfix, lock_boundary,
+                    opts["rewind_threshold"],
+                )
+                continue
+        # -------------------------------------------------------------
 
         # Number of iterations reached, stop.
         if count == (max_iter - 1):
@@ -905,6 +977,21 @@ def generate_mesh(domain, edge_length, **kwargs):
 
         end = time.time()
         logger.info("Elapsed wall-clock time %.3f seconds", end - start)
+
+    # Loop exhausted via a `continue` path (healing/improvement on
+    # the final iteration): finalize from the last point set.
+    if eg_segs is not None:
+        dt = CDT()
+        dt.insert(p.ravel().tolist())
+        dt.insert_constraints(eg_segs)
+    else:
+        dt = DT()
+        dt.insert(p.ravel().tolist())
+    p, t = _get_topology(dt)
+    t = _remove_triangles_outside(p, t, fd, geps)
+    p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
+    logger.info("Termination reached...maximum number of iterations.")
+    return p, t
 
 
 def _unpack_sizing(edge_length, opts):
@@ -963,6 +1050,79 @@ def _get_bars(t):
 
 
 # Persson-Strang
+def _al_quality(p, t):
+    """Area-length element quality, equilateral = 1 (OM2D
+    gettrimeshquan's qm): 4*sqrt(3)*A / (l1^2 + l2^2 + l3^2). The
+    in-loop OM2D thresholds (EXIT_QUALITY=0.30, heal 0.25) are
+    defined on THIS scale (fork's simp_qual uses another scale)."""
+    tri = p[t]
+    e1 = tri[:, 1] - tri[:, 0]
+    e2 = tri[:, 2] - tri[:, 1]
+    e3 = tri[:, 0] - tri[:, 2]
+    area = 0.5 * np.abs(e1[:, 0] * (-e3[:, 1]) - e1[:, 1] * (-e3[:, 0]))
+    den = (e1**2).sum(1) + (e2**2).sum(1) + (e3**2).sum(1)
+    den[den == 0] = np.finfo(float).eps
+    return 4.0 * np.sqrt(3.0) * area / den
+
+
+def _improve_points(p, t, fh, fd, geps, pfix, lock_boundary,
+                    rewind_threshold):
+    """OM2D meshgen.build improvement cycle (every `imp` iterations
+    on quality stagnation): delete low-connectivity interior nodes,
+    delete one node of too-short bars (LN < 0.5), split too-long
+    bars (LN > 2). Rewinds deletions when they would remove more
+    than ``rewind_threshold`` of the nodes."""
+    n0 = len(p)
+    protected = set()
+    for fix in pfix:
+        protected.add(_closest_node(fix, p))
+    _, bpts = _external_topology(p, t)
+    for b in bpts:
+        protected.add(_closest_node(b, p))
+
+    conn = np.bincount(t.ravel(), minlength=len(p))
+    low = {int(v) for v in np.where(conn <= 4)[0]
+           if conn[v] > 0 and int(v) not in protected}
+
+    bars = _get_bars(t)
+    barvec = p[bars[:, 0]] - p[bars[:, 1]]
+    L = np.sqrt((barvec**2).sum(1))
+    ideal = np.asarray(fh(p[bars].sum(1) / 2), dtype=float)
+    ideal[~np.isfinite(ideal) | (ideal <= 0)] = np.nanmedian(
+        ideal[np.isfinite(ideal) & (ideal > 0)]
+    )
+    LN = L / ideal
+
+    for a, b in bars[LN < 0.5]:
+        b = int(b)
+        if b not in protected and b not in low:
+            low.add(b)
+
+    new_pts = []
+    for (a, b) in bars[LN > 2.0]:
+        new_pts.append(0.5 * (p[int(a)] + p[int(b)]))
+
+    if low and len(low) > rewind_threshold * n0:
+        logger.info(
+            f"improvement rewind: {len(low)} deletions > "
+            f"{rewind_threshold:.0%} of {n0}; keeping nodes"
+        )
+        low = set()
+
+    keep = np.setdiff1d(np.arange(n0), np.fromiter(low, int)
+                        if low else np.array([], dtype=int))
+    p_new = p[keep]
+    if new_pts:
+        cand = np.asarray(new_pts)
+        inside = fd(cand) < -geps
+        p_new = np.vstack([p_new, cand[inside]])
+    logger.info(
+        f"improvement: -{len(low)} short/low-degree, "
+        f"+{len(p_new) - (n0 - len(low))} splits"
+    )
+    return p_new
+
+
 def _compute_forces(p, t, fh, min_edge_length, L0mult, opts):
     """Compute the forces on each edge based on the sizing function"""
     N = p.shape[0]
@@ -991,8 +1151,15 @@ def _compute_forces(p, t, fh, min_edge_length, L0mult, opts):
         repl = np.nanmedian(hbars[valid])
         hbars = np.where(valid, hbars, repl)
     L0 = hbars * L0mult * (np.nanmedian(L) / np.nanmedian(hbars))
-    F = L0 - L
-    F[F < 0] = 0  # Bar forces (scalars)
+    if opts.get("force_function", "persson_strang") == "bossen_heckbert":
+        # OM2D meshgen.build default: attractive/repulsive
+        # Bossen-Heckbert force F = (1-LN^4) * exp(-LN^4) / LN
+        LN = L / L0
+        F = (1.0 - LN**4) * np.exp(-(LN**4)) / LN
+        F = F * L0  # scale to bar-length units like Persson-Strang
+    else:
+        F = L0 - L
+        F[F < 0] = 0  # Bar forces (scalars)
     Fvec = (
         F[:, None] / L[:, None].dot(np.ones((1, 2))) * barvec
     )  # Bar forces (x,y components)
