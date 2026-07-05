@@ -661,6 +661,101 @@ def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False
     return inner, mainland, out
 
 
+def _coarsen_outside(polys, boubox, inflation=1.10, jump=200):
+    """Port of OceanMesh2D @geodata/private/coarsen_polygon.m:
+    decimate polyline vertices lying outside the ``inflation``-scaled
+    bounding polygon by jumping ``jump`` vertices at a time when a
+    long run (>= ``jump``) of consecutive outside points is found.
+    Keeps full detail inside; detail outside the domain of interest
+    cannot influence the mesh but slows every geometric query."""
+    from . import edges as _edges
+    from .geometry import inpoly2
+
+    bou = np.asarray(boubox, dtype=float)
+    finite = bou[~np.isnan(bou[:, 0])]
+    c = finite.mean(axis=0)
+    inflated = np.vstack([
+        (finite - c) * inflation + c,
+        [np.nan, np.nan],
+    ])
+    e_box = _edges.get_poly_edges(inflated)
+    bou_nn = np.nan_to_num(inflated)
+
+    out_segments = []
+    idx = np.where(np.isnan(polys[:, 0]))[0]
+    start = 0
+    for stop in idx:
+        seg = polys[start:stop]
+        start = stop + 1
+        if len(seg) == 0:
+            continue
+        inside, _ = inpoly2(seg, bou_nn, e_box)
+        keep = []
+        j = 0
+        n = len(seg)
+        while j < n - 1:
+            if inside[j]:
+                keep.append(j)
+                j += 1
+                continue
+            bd = min(j + jump, n - 1)
+            ext = min(jump, bd - j)
+            if ext > 0 and not inside[j:bd].any():
+                keep.append(j)
+                keep.append(j + ext)
+                j += ext
+            else:
+                keep.append(j)
+                j += 1
+        keep.append(n - 1)
+        out_segments.append(seg[sorted(set(keep))])
+        out_segments.append(np.array([[np.nan, np.nan]]))
+    if not out_segments:
+        return polys
+    return np.vstack(out_segments)
+
+
+def _moving_average_smooth(polys, window=5):
+    """OM2D-style moving-average shoreline smoothing (geodata
+    ``window`` option; an alternative to Chaikin corner cutting).
+    Rings are smoothed cyclically; open lines keep their ends."""
+    if window <= 1:
+        return polys
+    out = []
+    idx = np.where(np.isnan(polys[:, 0]))[0]
+    start = 0
+    kernel = np.ones(window) / window
+    for stop in idx:
+        seg = polys[start:stop]
+        start = stop + 1
+        if len(seg) < window + 2:
+            out.append(seg)
+            out.append(np.array([[np.nan, np.nan]]))
+            continue
+        closed = np.allclose(seg[0], seg[-1])
+        if closed:
+            body = seg[:-1]
+            pad = window // 2
+            ext = np.vstack([body[-pad:], body, body[:pad]])
+            sm = np.column_stack([
+                np.convolve(ext[:, 0], kernel, mode="valid"),
+                np.convolve(ext[:, 1], kernel, mode="valid"),
+            ])[: len(body)]
+            sm = np.vstack([sm, sm[:1]])
+        else:
+            sm = seg.copy()
+            inner_len = len(seg) - 2 * (window // 2)
+            if inner_len > 0:
+                smoothed = np.column_stack([
+                    np.convolve(seg[:, 0], kernel, mode="valid"),
+                    np.convolve(seg[:, 1], kernel, mode="valid"),
+                ])
+                sm[window // 2: window // 2 + len(smoothed)] = smoothed
+        out.append(sm)
+        out.append(np.array([[np.nan, np.nan]]))
+    return np.vstack(out)
+
+
 def _chaikins_corner_cutting(coords, refinements=5):
     """http://www.cs.unc.edu/~dm/UNC/COMP258/LECTURES/Chaikins-Algorithm.pdf"""
     logger.debug("Entering:_chaikins_corner_cutting")
@@ -947,6 +1042,10 @@ class Shoreline(Region):
         refinements=1,
         minimum_area_mult=4.0,
         smooth_shoreline=True,
+        smoothing_method="chaikin",
+        smoothing_window=5,
+        coarsen_outside=True,
+        coarsen_inflation=1.10,
         stereo=False,
     ):
         if isinstance(shp, str):
@@ -1026,7 +1125,25 @@ class Shoreline(Region):
             self.boubox = np.asarray(_create_boubox(self.bbox))
 
         if smooth_shoreline:
-            polys = _smooth_shoreline(polys, self.refinements)
+            if smoothing_method == "chaikin":
+                polys = _smooth_shoreline(polys, self.refinements)
+            elif smoothing_method == "moving_average":
+                # OM2D geodata 'window' moving-average smoothing
+                polys = _moving_average_smooth(
+                    polys, window=smoothing_window
+                )
+            elif smoothing_method is not None:
+                raise ValueError(
+                    "smoothing_method must be 'chaikin', "
+                    "'moving_average', or None"
+                )
+
+        if coarsen_outside:
+            # OM2D coarsen_polygon: decimate detail outside the
+            # (inflated) domain polygon
+            polys = _coarsen_outside(
+                polys, self.boubox, inflation=coarsen_inflation
+            )
 
         polys = _densify(polys, self.h0, self.bbox)
 
