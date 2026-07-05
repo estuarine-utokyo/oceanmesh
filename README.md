@@ -73,6 +73,7 @@ points, cells = om.delete_boundary_faces(points, cells, min_qual=0.15)
 - [6. Advanced Topics](#6-advanced-topics)
   - [6.1 Multiscale Mesh Generation](#61-multiscale-mesh-generation)
   - [6.2 Global and Multiscale Meshing](#62-global-and-multiscale-meshing)
+  - [6.3 Constrained Delaunay: fixed points and fixed edges (pfix / egfix)](#63-constrained-delaunay-fixed-points-and-fixed-edges-pfix--egfix)
 - [7. Performance Optimization](#7-performance-optimization)
 - [8. Third-Party Code](#8-third-party-code)
 - [9. Testing](#9-testing)
@@ -89,6 +90,7 @@ points, cells = om.delete_boundary_faces(points, cells, min_qual=0.15)
   - Automatically handles arbitrarily complex shoreline vector datasets and incorporates them into mesh generation.
   - A variety of commonly used mesh size functions with simple, scriptable controls.
   - Mesh checking and clean-up methods to avoid simulation problems.
+  - Constrained Delaunay triangulation (this fork, `main` branch): fixed points (`pfix`) and fixed EDGES (`egfix`) survive every DistMesh iteration, so the mesh boundary can be pinned exactly onto a shoreline polyline — the Python counterpart of MATLAB OceanMesh2D's V6 "high-fidelity" mode.
 
 [Back to top](#table-of-contents)
 
@@ -638,6 +640,81 @@ points, cells = om.generate_multiscale_mesh(
 *The image shows the global mesh with a refined Australia region.
 
 See the tests in the `tests/` folder for more inspiration; work is ongoing on this package.
+
+[Back to top](#table-of-contents)
+
+---
+
+### 6.3 Constrained Delaunay: fixed points and fixed edges (pfix / egfix)
+
+*(This fork only, `main` branch — not in upstream `CHLNDDEV/oceanmesh`.)*
+
+MATLAB OceanMesh2D's V6 "high-fidelity" mode pins resampled shoreline
+points and edges into the triangulation, which MATLAB gets for free
+from `delaunayTriangulation`'s constraint support. The Python port
+historically had only an unconstrained CGAL Delaunay class, so fixed
+POINTS could be position-locked but their connecting EDGES could
+still be flipped away by retriangulation — post-hoc "snap the nodes
+to the shoreline" workflows are jagged and unbounded for exactly this
+reason.
+
+This fork adds:
+
+- `_constrained_delaunay_class` — a pybind11 wrapper of CGAL
+  `Constrained_Delaunay_triangulation_2` (`Exact_predicates_tag`)
+  with the same interface as `_delaunay_class` plus
+  `insert_constraints(flat_segment_coords)` and
+  `get_constrained_edges()`.
+- `generate_mesh(..., pfix=..., egfix=...)` — `egfix` is an `(M, 2)`
+  integer array of indices into `pfix` (the OceanMesh2D convention).
+  When present, every retriangulation inside the DistMesh loop uses
+  the constrained class and re-imposes the constraint segments
+  geometrically; forces on `pfix` are zeroed as before. Constrained
+  chains are therefore guaranteed to exist as triangulation edges in
+  every iteration.
+- `shoreline_to_fixed_points(shoreline, edge_length,
+  return_edges=True)` / `polylines_to_fixed_points(...,
+  return_edges=True)` — resample shoreline polylines at the local
+  target edge length (the `mesh1d` idea) and return `(pfix, egfix)`
+  chains directly, with closing edges for rings and index remapping
+  across the near-duplicate merge.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+import numpy as np
+import oceanmesh as om
+
+shore = om.Shoreline(fname, extent.bbox, min_edge_length)
+sdf = om.signed_distance_function(shore)
+edge_length = om.feature_sizing_function(shore, sdf, max_edge_length=0.05)
+
+# Resample the shoreline at the local target size -> fixed chains
+pfix, egfix = om.shoreline_to_fixed_points(shore, edge_length, return_edges=True)
+
+points, cells = om.generate_mesh(sdf, edge_length, pfix=pfix, egfix=egfix)
+
+# IMPORTANT: skip quality-based boundary deletion afterwards.
+# delete_boundary_faces / delete_faces_connected_to_one_face remove
+# the constrained boundary row (the "cleanup retreat", ~0.7x the
+# local element size); with a constrained boundary run only
+points, cells = om.make_mesh_boundaries_traversable(points, cells)
+```
+
+Notes:
+
+- Endpoints of `egfix` segments must be rows of `pfix`; other mesh
+  points may not lie on constrained segments (CGAL splits crossing
+  constraints, which changes vertex count — keep chains simple).
+- Boundary slivers that the skipped cleaners used to remove must be
+  handled constraint-aware instead (e.g. delete "cap" triangles whose
+  three vertices all lie on the chain — removing them exposes the
+  constrained edges, so conformity is unaffected).
+- Build note: the extension compiles like the other CGAL modules. On
+  Intel oneAPI toolchains build with `CC=icx CXX=icpx` and link with
+  `LDFLAGS="-static-intel"` so the resulting `.so` carries no oneAPI
+  runtime dependencies (verified: `ldd` clean, importable on compute
+  nodes without loading the compiler module).
 
 [Back to top](#table-of-contents)
 
