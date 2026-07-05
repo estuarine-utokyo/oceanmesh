@@ -35,6 +35,23 @@ from oceanmesh.edgefx import (
 )
 from oceanmesh.edges import draw_edges, get_poly_edges
 from oceanmesh.filterfx import filt2
+from oceanmesh.boundary_conditions import (
+    boundary_loops,
+    make_bc_auto,
+    read_fort14,
+    write_2dm,
+    write_fort14,
+    write_gr3,
+)
+from oceanmesh.cfl import bound_courant_number, calc_cfl, get_bar_lengths
+from oceanmesh.mesh_improve import (
+    area_length_quality,
+    bound_connectivity,
+    collapse_thin_triangles,
+    direct_smoother_lur,
+    flip_edge,
+    renumber_rcm,
+)
 from oceanmesh.finalize import (
     elevation_bands,
     enforce_courant_bounds,
@@ -129,6 +146,21 @@ __all__ = [
     "enforce_nearshore_max_edge",
     "finalize_sizing",
     "wave_celerity",
+    "boundary_loops",
+    "make_bc_auto",
+    "read_fort14",
+    "write_fort14",
+    "write_2dm",
+    "write_gr3",
+    "bound_courant_number",
+    "calc_cfl",
+    "get_bar_lengths",
+    "area_length_quality",
+    "bound_connectivity",
+    "collapse_thin_triangles",
+    "direct_smoother_lur",
+    "flip_edge",
+    "renumber_rcm",
     "get_poly_edges",
     "draw_edges",
     "generate_mesh",
