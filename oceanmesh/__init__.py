@@ -23,6 +23,7 @@ from oceanmesh.clean import (
     mesh_clean,
 )
 from oceanmesh.edgefx import (
+    channel_sizing_function,
     bathymetric_gradient_sizing_function,
     distance_sizing_from_line_function,
     distance_sizing_from_point_function,
@@ -35,6 +36,12 @@ from oceanmesh.edgefx import (
 )
 from oceanmesh.edges import draw_edges, get_poly_edges
 from oceanmesh.filterfx import filt2
+from oceanmesh.bathymetry import (
+    extract_contour,
+    interp_bathymetry,
+    lim_bathy_slope,
+    unstructured_slopes,
+)
 from oceanmesh.boundary_conditions import (
     boundary_loops,
     make_bc_auto,
@@ -161,6 +168,11 @@ __all__ = [
     "direct_smoother_lur",
     "flip_edge",
     "renumber_rcm",
+    "extract_contour",
+    "interp_bathymetry",
+    "lim_bathy_slope",
+    "unstructured_slopes",
+    "channel_sizing_function",
     "get_poly_edges",
     "draw_edges",
     "generate_mesh",

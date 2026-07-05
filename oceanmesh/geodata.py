@@ -1345,7 +1345,7 @@ class DEM(Grid):
     Digitial elevation model read in from a tif or NetCDF file
     """
 
-    def __init__(self, dem, crs="EPSG:4326", bbox=None, extrapolate=False):
+    def __init__(self, dem, crs="EPSG:4326", bbox=None, extrapolate=False, backup=None):
         """Read in a DEM from a tif or NetCDF file for later use
         in developing mesh sizing functions.
 
@@ -1398,6 +1398,27 @@ class DEM(Grid):
             extrapolate=extrapolate,  # user-specified potentially "dangerous" option
         )
         super().build_interpolant()
+
+        if backup is not None:
+            # OM2D 'backupdem' (Fb2): fill primary-DEM holes from a
+            # secondary DEM so downstream sizing/interp never see NaN
+            # where the backup has coverage.
+            holes = ~np.isfinite(self.values)
+            if holes.any():
+                b2 = backup if isinstance(backup, DEM) else DEM(
+                    backup, crs=crs, bbox=bbox, extrapolate=True
+                )
+                xg, yg = self.create_grid()
+                fill = np.asarray(b2.eval(
+                    np.column_stack([xg[holes], yg[holes]])
+                ), dtype=float)
+                vals = np.asarray(self.values, dtype=float)
+                vals[holes] = fill
+                self.values = vals
+                super().build_interpolant()
+                logger.info(
+                    f"backup DEM filled {int(holes.sum())} cells"
+                )
 
     def flip(self):
         """Flip the DEM upside down"""

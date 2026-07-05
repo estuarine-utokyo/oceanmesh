@@ -504,18 +504,12 @@ def bathymetric_gradient_sizing_function(
     grid_details = (nx, ny, dx, dy)
 
     if type_of_filter == "barotropic" and filter_quotient > 0:
-        # Temporary fix for barotropic filter not implemented correctly yet
-        assert ValueError("Barotropic filter not implemented yet")
-
         logger.info("Baroptropic Rossby radius calculation...")
         bs, time_taken = rossby_radius_filter(
             tmpz, dem.bbox, grid_details, coords, filter_quotient, True
         )
 
     elif type_of_filter == "baroclinic" and filter_quotient > 0:
-        # Temporary fix for barotropic filter not implemented correctly yet
-        assert ValueError("Baroclinic filter not implemented yet")
-
         logger.info("Baroclinic Rossby radius calculation...")
         bs, time_taken = rossby_radius_filter(
             tmpz, dem.bbox, grid_details, coords, filter_quotient, False
@@ -940,6 +934,76 @@ def wavelength_sizing_function(
     if max_edge_length is not None:
         grid.values[grid.values > max_edge_length] = max_edge_length
 
+    grid.build_interpolant()
+    return grid
+
+
+def channel_sizing_function(
+    dem,
+    channels,
+    ch=0.5,
+    min_edge_length_channel=100.0,
+    angle_of_reslope=60.0,
+    min_edge_length=None,
+    max_edge_length=None,
+    crs="EPSG:4326",
+):
+    """Port of OceanMesh2D edgefx ``ch`` (chfx): resolve channels /
+    thalwegs. For every channel point the local channel half-width
+    is estimated as ``tan(angle_of_reslope) * max(1, -z)`` and every
+    sizing cell within that stencil gets ``h = max(1, -z) / ch``
+    (floored at ``min_edge_length_channel``).
+
+    ``channels`` is a list of (N, 2) polyline arrays (thalwegs, e.g.
+    from a flow-accumulation extraction), in the DEM's CRS.
+    """
+    logger.info("Building a channel sizing function...")
+    grid = Grid(
+        bbox=dem.bbox,
+        dx=dem.dx,
+        dy=dem.dy,
+        extrapolate=True,
+        hmin=min_edge_length,
+        crs=crs,
+        values=np.nan,
+    )
+    xg, yg = grid.create_grid()
+    values = np.full(xg.shape, np.nan)
+    is_geo = getattr(dem.crs, "is_geographic", False) or (
+        isinstance(crs, str) and "4326" in crs
+    )
+    m_per_unit = 111e3 if is_geo else 1.0
+    tanre = np.tan(np.deg2rad(angle_of_reslope))
+    nx, ny = xg.shape
+    x0, y0 = xg[0, 0], yg[0, 0]
+    for poly in channels:
+        poly = np.asarray(poly, dtype=float)
+        if poly.ndim != 2 or len(poly) == 0:
+            continue
+        z = np.asarray(dem.eval(poly), dtype=float)
+        dp = np.maximum(1.0, -z)
+        radii = tanre * dp / m_per_unit  # stencil radius, grid units
+        for (px, py), r, d in zip(poly, radii, dp):
+            i = int(round((px - x0) / grid.dx))
+            j = int(round((py - y0) / grid.dy))
+            nidx = max(1, int(np.ceil(r / grid.dx)))
+            i0, i1 = max(0, i - nidx), min(nx, i + nidx + 1)
+            j0, j1 = max(0, j - nidx), min(ny, j + nidx + 1)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            hsize = max(d / ch, min_edge_length_channel) / m_per_unit
+            blk = values[i0:i1, j0:j1]
+            blk = np.where(np.isnan(blk), hsize,
+                           np.minimum(blk, hsize))
+            values[i0:i1, j0:j1] = blk
+    if min_edge_length is not None:
+        values = np.maximum(values, min_edge_length / m_per_unit)
+    cap = (max_edge_length / m_per_unit
+           if max_edge_length is not None else np.nanmax(values))
+    values = np.where(np.isnan(values), cap, values)
+    grid.values = values
+    grid.hmin = (min_edge_length / m_per_unit
+                 if min_edge_length else float(np.nanmin(values)))
     grid.build_interpolant()
     return grid
 
