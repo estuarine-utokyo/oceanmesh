@@ -62,6 +62,7 @@ points, cells = om.delete_boundary_faces(points, cells, min_qual=0.15)
   - [3.1 Linux/Mac](#31-linuxmac)
   - [3.2 Windows](#32-windows)
   - [3.3 Development installation](#33-development-installation)
+  - [3.4 HPC / Intel oneAPI installation](#34-hpc--intel-oneapi-installation)
 - [4. Support & Community](#4-support--community)
 - [5. Basic Usage](#5-basic-usage)
   - [5.1 Setting the Region](#51-setting-the-region)
@@ -181,6 +182,41 @@ To install from source for development and testing:
 ```bash
 pip install -e .
 ```
+
+[Back to top](#table-of-contents)
+
+---
+
+### 3.4 HPC / Intel oneAPI installation
+
+Reproducible install on any machine with conda-forge access; works
+unchanged on HPC login nodes with an Intel oneAPI module.
+
+```bash
+git clone <this fork> && cd oceanmesh
+mamba env create -f environment.yml     # all build+runtime deps, conda-forge only
+conda activate oceanmesh
+
+# GNU toolchain:
+pip install -e . --no-deps
+
+# Intel oneAPI toolchain (e.g. `module load intel`):
+CC=icx CXX=icpx pip install -e . --no-deps
+```
+
+When icx/icpx are detected, setup.py automatically appends
+`-static-intel` to `LDFLAGS`, so the compiled extension modules have
+**no oneAPI runtime dependencies** — they import on compute nodes
+without loading the compiler module (verify with
+`ldd $(python -c "import _delaunay_class as m; print(m.__file__)")`).
+
+Notes:
+- `oceanmesh/geometry/point_in_polygon_.c` is generated from the
+  `.pyx` at build time (Cython is a build requirement) and is not
+  tracked in git; do not commit generated `.c`/`.so` files.
+- No paths are read from the environment besides the standard
+  `CONDA_PREFIX` (header/library discovery) and optional
+  `OCEANMESH_PREFIX` override.
 
 [Back to top](#table-of-contents)
 

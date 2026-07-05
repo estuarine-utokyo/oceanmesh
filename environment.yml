@@ -1,0 +1,37 @@
+# Reproducible oceanmesh environment (conda-forge only; no pip deps).
+#
+#   mamba env create -f environment.yml
+#   conda activate oceanmesh
+#   # plain build:            pip install -e . --no-deps
+#   # Intel oneAPI build:     CC=icx CXX=icpx pip install -e . --no-deps
+#   #   (-static-intel is applied automatically; the .so files have
+#   #    no oneAPI runtime dependencies)
+#
+# CGAL >= 5 is header-only for our use; gmp/mpfr are its arithmetic
+# backends; pybind11 + cython + numpy are build-time requirements
+# (also listed in pyproject.toml for isolated builds).
+name: oceanmesh
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - shapely
+  - geopandas
+  - fiona
+  - pyproj
+  - rasterio>=1.3
+  - rioxarray
+  - meshio
+  - scikit-fmm
+  - scikit-image
+  - cgal-cpp>=5.0
+  - gmp
+  - mpfr
+  - pybind11>=2.6
+  - cython>=0.29
+  - setuptools
+  - wheel

@@ -13,6 +13,7 @@ build/
 *.hdf5
 *.msh
 *.so
+oceanmesh/geometry/*.c
 *.png
 tests/*.txt
 *.zip

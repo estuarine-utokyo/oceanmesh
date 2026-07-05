@@ -211,6 +211,27 @@ def get_requirements():
     return requirements
 
 
+def _apply_oneapi_link_policy():
+    """Portable Intel oneAPI builds: when compiling with icx/icpx,
+    link the Intel runtime statically so the produced extension
+    modules carry NO libimf/libsvml/libintlc dependencies and import
+    on machines/nodes where the compiler module is not loaded.
+    Explicit user LDFLAGS containing -static-intel (or
+    -shared-intel) are respected as-is."""
+    cc = os.environ.get("CC", "")
+    cxx = os.environ.get("CXX", "")
+    if not ("icx" in cc or "icpx" in cxx):
+        return
+    ldflags = os.environ.get("LDFLAGS", "")
+    if "-static-intel" in ldflags or "-shared-intel" in ldflags:
+        return
+    os.environ["LDFLAGS"] = (ldflags + " -static-intel").strip()
+    print("oceanmesh setup: Intel compiler detected -> "
+          "appending -static-intel to LDFLAGS")
+
+
+_apply_oneapi_link_policy()
+
 cython_exts = maybe_add_cython_extensions()
 ext_modules.extend(cython_exts)
 
