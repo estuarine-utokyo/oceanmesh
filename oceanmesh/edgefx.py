@@ -529,7 +529,15 @@ def bathymetric_gradient_sizing_function(
     eps = 1e-10  # small number to approximate derivative
     # Use depth magnitude (treat land/shallows after cutoff) to scale size
     dp = np.clip(tmpz, None, -1.0)
-    values_m = (2 * np.pi / slope_parameter) * np.abs(dp) / (bs + eps)
+    slp_arr = np.asarray(slope_parameter, dtype=float)
+    if slp_arr.ndim == 2:
+        # OM2D Nx3 [slp, zmin, zmax] elevation-band form
+        from .finalize import elevation_bands
+
+        slp_cell = elevation_bands(slp_arr, tmpz, default=np.inf)
+        values_m = (2 * np.pi / slp_cell) * np.abs(dp) / (bs + eps)
+    else:
+        values_m = (2 * np.pi / slope_parameter) * np.abs(dp) / (bs + eps)
 
     # Convert back to degrees if geographic
     if getattr(dem.crs, "is_geographic", False):
@@ -781,7 +789,7 @@ def feature_sizing_function(
 
     logger.info("Building a feature sizing function...")
 
-    assert r > 0, "local feature size "
+    assert r != 0, "r must be nonzero (r<0 = OM2D automatic mode)"
     grid_calc = Grid(
         bbox=shoreline.bbox,
         dx=shoreline.h0 / 2,  # dx is half that of the original shoreline spacing
@@ -839,7 +847,15 @@ def feature_sizing_function(
         dMA, _ = tree.query(qpts, k=1, n_jobs=-1)
     dMA = dMA.reshape(*dis.shape)
     W = dMA + np.abs(dis)
-    feature_size = (2 * W) / r
+    if r < 0:
+        # OM2D automatic mode (fs < 0): cap the element count per
+        # feature at -r, but never demand more elements than the
+        # feature supports at h0: r_eff = min(-r, ceil(W / h0)).
+        r_eff = np.minimum(float(-r), np.ceil(W / shoreline.h0))
+        r_eff = np.maximum(r_eff, 1.0)
+        feature_size = (2 * W) / r_eff
+    else:
+        feature_size = (2 * W) / r
 
     grid_calc.values = feature_size
     grid_calc.build_interpolant()
@@ -916,7 +932,16 @@ def wavelength_sizing_function(
         bbox=dem.bbox, dx=dem.dx, dy=dem.dy, extrapolate=True, values=0.0, crs=crs
     )
     tmpz[np.abs(tmpz) < 1] = 1
-    grid.values = period * np.sqrt(gravity * np.abs(tmpz)) / wl
+    wl_arr = np.asarray(wl, dtype=float)
+    if wl_arr.ndim == 2:
+        # OM2D Nx3 [wl, zmin, zmax] elevation-band form; cells
+        # outside every band get no wavelength constraint (inf).
+        from .finalize import elevation_bands
+
+        wl_cell = elevation_bands(wl_arr, tmpz, default=np.inf)
+        grid.values = period * np.sqrt(gravity * np.abs(tmpz)) / wl_cell
+    else:
+        grid.values = period * np.sqrt(gravity * np.abs(tmpz)) / wl
 
     # Convert back to degrees from meters (if geographic)
     if crs == "EPSG:4326" or crs == 4326:
