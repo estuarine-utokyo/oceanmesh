@@ -56,9 +56,10 @@ std::vector<int> findIndices(const std::vector<int> &A, const int value) {
 }
 
 // solve the Hamilton-Jacobi equation
-std::vector<double> c_gradient_limit(const std::vector<int> &dims,
+std::vector<double> c_gradient_limit_v(const std::vector<int> &dims,
                               const double &elen,
-                              const double &dfdx, const int &imax,
+                              const std::vector<double> &dfdx_v,
+                              const int &imax,
                               const std::vector<double> &ffun) {
 
   assert(dims[0] > 0 && dims[1] > 0 && dims[2] > 0);
@@ -147,6 +148,9 @@ std::vector<double> c_gradient_limit(const std::vector<int> &dims,
         }
 
         //----------------- calc. limits about min.-value
+        // spatially-variable grade: use the centre node's dfdx
+        // (OM2D limgradStruct fdfdx(inod) semantics)
+        double dfdx = dfdx_v[nod1];
         if (ffun_s[nod1] > ffun_s[nod2]) {
 
           double fun1 = ffun_s[nod2] + elenp * dfdx;
@@ -170,10 +174,18 @@ std::vector<double> c_gradient_limit(const std::vector<int> &dims,
   return ffun_s;
 }
 
+std::vector<double> c_gradient_limit(const std::vector<int> &dims,
+                              const double &elen,
+                              const double &dfdx, const int &imax,
+                              const std::vector<double> &ffun) {
+  std::vector<double> dfdx_v(ffun.size(), dfdx);
+  return c_gradient_limit_v(dims, elen, dfdx_v, imax, ffun);
+}
+
 // Python wrapper
 py::array
 gradient_limit(py::array_t<int, py::array::c_style | py::array::forcecast> dims,
-        const double elen, const double dfdx, const int imax,
+        const double elen, py::object dfdx, const int imax,
         py::array_t<double, py::array::c_style | py::array::forcecast> ffun) {
   int num_points = (int)ffun.size();
 
@@ -183,7 +195,19 @@ gradient_limit(py::array_t<int, py::array::c_style | py::array::forcecast> dims,
   std::memcpy(cffun.data(), ffun.data(), num_points * sizeof(double));
   std::memcpy(cdims.data(), dims.data(), 3 * sizeof(int));
 
-  std::vector<double> sffun = c_gradient_limit(cdims, elen, dfdx, imax, cffun);
+  std::vector<double> cdfdx(num_points);
+  if (py::isinstance<py::float_>(dfdx) || py::isinstance<py::int_>(dfdx)) {
+    std::fill(cdfdx.begin(), cdfdx.end(), dfdx.cast<double>());
+  } else {
+    auto arr = py::array_t<double, py::array::c_style |
+                           py::array::forcecast>::ensure(dfdx);
+    if (!arr || (int)arr.size() != num_points)
+      throw std::runtime_error(
+          "dfdx must be a scalar or an array matching ffun");
+    std::memcpy(cdfdx.data(), arr.data(), num_points * sizeof(double));
+  }
+
+  std::vector<double> sffun = c_gradient_limit_v(cdims, elen, cdfdx, imax, cffun);
 
   ssize_t sodble = (ssize_t)sizeof(double);
   std::vector<ssize_t> shape = {num_points, 1};

@@ -35,6 +35,13 @@ from oceanmesh.edgefx import (
 )
 from oceanmesh.edges import draw_edges, get_poly_edges
 from oceanmesh.filterfx import filt2
+from oceanmesh.finalize import (
+    elevation_bands,
+    enforce_courant_bounds,
+    enforce_nearshore_max_edge,
+    finalize_sizing,
+    wave_celerity,
+)
 from oceanmesh.geodata import (
     DEM,
     Shoreline,
@@ -117,6 +124,11 @@ __all__ = [
     "multiscale_signed_distance_function",
     "signed_distance_function",
     "filt2",
+    "elevation_bands",
+    "enforce_courant_bounds",
+    "enforce_nearshore_max_edge",
+    "finalize_sizing",
+    "wave_celerity",
     "get_poly_edges",
     "draw_edges",
     "generate_mesh",
