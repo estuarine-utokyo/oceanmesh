@@ -708,7 +708,11 @@ def _coarsen_outside(polys, boubox, inflation=1.10, jump=200):
                 keep.append(j)
                 j += 1
         keep.append(n - 1)
-        out_segments.append(seg[sorted(set(keep))])
+        dec = seg[sorted(set(keep))]
+        if len(dec) < 4:
+            # never decimate a ring below a valid linearring
+            dec = seg
+        out_segments.append(dec)
         out_segments.append(np.array([[np.nan, np.nan]]))
     if not out_segments:
         return polys
