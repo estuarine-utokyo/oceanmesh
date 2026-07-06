@@ -323,7 +323,12 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
         )
 
         q_pre = area_length_quality(mp, mt).min()
-        mp2, mt2 = bound_connectivity(mp, mt, max_valence=7)
+        # flips restricted to the regenerated side + weld ring:
+        # a global pass flipped valence-8 vertices 20+ km away and
+        # pushed pre-existing borderline C4 pairs over the gate
+        region = np.where(d_new <= d_hole + 1e-9)[0]
+        mp2, mt2 = bound_connectivity(mp, mt, max_valence=7,
+                                      region_nodes=region)
         if area_length_quality(mp2, mt2).min() >= q_pre - 1e-12:
             mp, mt = mp2, mt2
         merged = (mp, mt)

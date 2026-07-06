@@ -168,7 +168,7 @@ def flip_edge(points, cells, elem_a, elem_b):
 
 
 def bound_connectivity(points, cells, max_valence=7, pfix=None,
-                       max_iter=20):
+                       max_iter=20, region_nodes=None):
     """Behavioural port of msh.bound_con_int (OPNML
     reduce_con_int): reduce interior vertex valence to at most
     ``max_valence`` by flipping edges incident to over-connected
@@ -191,6 +191,9 @@ def bound_connectivity(points, cells, max_valence=7, pfix=None,
         val = _vertex_valence(t, n)
         over = [v for v in np.where(val > max_valence)[0]
                 if v not in bnd]
+        if region_nodes is not None:
+            _reg = set(int(q) for q in region_nodes)
+            over = [v for v in over if v in _reg]
         if not over:
             break
         progressed = False
