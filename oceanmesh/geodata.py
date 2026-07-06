@@ -498,6 +498,47 @@ def _create_ranges(start, stop, N, endpoint=True):
     return steps[:, None] * np.arange(N) + start[:, None]
 
 
+def _resample_segments(polys, spacing):
+    """OM2D my_interpm parity: resample every NaN-delimited segment
+    to ~uniform ``spacing`` (degrees) — DECIMATING excess detail as
+    well as filling gaps. Without decimation a fine global
+    shoreline (GSHHS_f over the W-Pacific) enters feature/SDF
+    machinery with millions of vertices and stalls sizing for a
+    10-50 km nest."""
+    out = []
+    isnan = np.isnan(polys[:, 0])
+    start = 0
+    for idx in list(np.where(isnan)[0]) + [len(polys)]:
+        seg = polys[start:idx]
+        start = idx + 1
+        n = len(seg)
+        if n == 0:
+            continue
+        if n < 3:
+            out.append(seg)
+            out.append(np.array([[np.nan, np.nan]]))
+            continue
+        closed = bool(np.allclose(seg[0], seg[-1]))
+        d = np.hypot(*np.diff(seg, axis=0).T)
+        s = np.concatenate([[0.0], np.cumsum(d)])
+        L = s[-1]
+        if L <= spacing:
+            out.append(seg)
+            out.append(np.array([[np.nan, np.nan]]))
+            continue
+        m = max(int(np.ceil(L / spacing)) + 1, 4 if closed else 2)
+        si = np.linspace(0.0, L, m)
+        res = np.column_stack([np.interp(si, s, seg[:, 0]),
+                               np.interp(si, s, seg[:, 1])])
+        if closed:
+            res[-1] = res[0]
+        out.append(res)
+        out.append(np.array([[np.nan, np.nan]]))
+    if not out:
+        return polys
+    return np.vstack(out)
+
+
 def _densify(poly, maxdiff, bbox, radius=0):
     """Fills in any gaps in latitude or longitude arrays
     that are greater than a `maxdiff` (degrees) apart
@@ -1159,6 +1200,9 @@ class Shoreline(Region):
         # duplicate vertices) — the multiscale covering test needs
         # the true region (Obitsu I11/J11 incident).
         self.region_polygon = np.asarray(self.boubox, dtype=float)
+        # OM2D my_interpm parity: uniform resample (decimate +
+        # densify) at h0/2 before classification
+        polys = _resample_segments(polys, 0.5 * self.h0)
         self.inner, self.mainland, self.boubox = _classify_shoreline(
             self.bbox, self.boubox, polys, self.h0 / 2, self.minimum_area_mult, stereo
         )
