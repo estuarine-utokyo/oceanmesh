@@ -1,6 +1,6 @@
 # OceanMesh2D -> oceanmesh: Full Port Plan
 
-Status: P1-P3 IMPLEMENTED (2026-07-06; commits 0a7ac65..e55f73f + tests). P4 pending. Remaining P1 acceptance: 3-nest Tokyo Bay A/B (fvcom-mesh-tools side). Owner: fvcom-mesh-tools
+Status: P1-P3 IMPLEMENTED (2026-07-06; commits 0a7ac65..e55f73f + tests). P4 IMPLEMENTED (mesh merge/remesh_patch/weirs/floodplain helper; commits 13d7004+). Remaining P1 acceptance: 3-nest Tokyo Bay A/B (fvcom-mesh-tools side). Owner: fvcom-mesh-tools
 project. Target branch: `main` (this fork). C++ builds follow the
 Intel oneAPI icx policy already used for the CDT extension.
 
