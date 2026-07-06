@@ -715,6 +715,14 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         global_minimum = np.amin([global_minimum, edge_length.hmin])
         # Use the domain's own stereo flag (global first domain may be stereo=True)
         _nest_kw = dict(kwargs)
+        # blend_into propagates the FINE grid's hmin into the
+        # blended coarse grid; without an explicit per-nest
+        # min_edge_length the outer nest seeds initial points at
+        # the FINEST spacing over its whole (huge) bbox — for a
+        # W-Pacific nest at 100 m that is ~4e9 points (OOM/SIGKILL)
+        _nest_kw.setdefault(
+            "min_edge_length", edge_lengths[domain_number].hmin
+        )
         if domain_number == 0 and ms_pfix is not None:
             _nest_kw["pfix"] = ms_pfix
             if ms_egfix is not None:
