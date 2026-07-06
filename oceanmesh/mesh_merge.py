@@ -253,11 +253,21 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
         )
         return sgn * d
 
+    # reuse the old cavity ring nodes verbatim (pfix): the new
+    # patch boundary then coincides EXACTLY with the hole mesh's
+    # ring, so stitching welds instead of interleaving two
+    # discretizations of the same curve (sliver source).
+    from .boundary_conditions import boundary_loops
+
+    ring_nodes = np.unique(
+        np.concatenate(boundary_loops(sub_t))
+    )
+    pfix_ring = sub_p[ring_nodes]
     x0, y0, x1, y1 = cavity.bounds
     domain = Domain((x0, x1, y0, y1), fd)
     new_p, new_t = generate_mesh(
         domain, fh, min_edge_length=h0, max_iter=max_iter,
-        seed=seed,
+        seed=seed, pfix=pfix_ring, lock_boundary=True,
     )
     merged = merge_meshes(new_p, new_t, hole_p, hole_t)
     logger.info(
