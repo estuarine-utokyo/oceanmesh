@@ -312,6 +312,26 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
         free = is_new & (d_ring < band) & (d_ring > 1e-9) & ~bnd
         if free.any():
             mp, _ = direct_smoother_lur(mp, mt, pfix=mp[~free])
+        # OM2D post-merge clean analog: welded ring nodes carry
+        # old+new incident triangles (valence 9-10) — flip them
+        # down; then collapse borderline slivers and re-relax the
+        # band once.
+        from .mesh_improve import (
+            bound_connectivity,
+            collapse_thin_triangles,
+        )
+
+        mp, mt = bound_connectivity(mp, mt, max_valence=7)
+        mp, mt = collapse_thin_triangles(mp, mt, min_qual=0.15)
+        d_ring, _ = cKDTree(ring_all).query(mp)
+        d_new, _ = cKDTree(new_p).query(mp)
+        d_hole, _ = cKDTree(hole_p).query(mp)
+        bnd = np.zeros(len(mp), bool)
+        bnd[np.unique(get_boundary_edges(mt))] = True
+        free = ((d_new < d_hole) & (d_ring < band)
+                & (d_ring > 1e-9) & ~bnd)
+        if free.any():
+            mp, _ = direct_smoother_lur(mp, mt, pfix=mp[~free])
         merged = (mp, mt)
     else:
         merged = merge_meshes(new_p, new_t, hole_p, hole_t)
