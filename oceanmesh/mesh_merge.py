@@ -176,6 +176,10 @@ def _reconstruct_sizing(points, cells):
     lc = np.linalg.norm(a - b, axis=1)
     area = 0.5 * np.abs(np.cross(b - a, c - a))
     cr = la * lb * lc / np.maximum(4.0 * area, 1e-30)
+    # circumradius -> EDGE-LENGTH sizing (equilateral: a = R*sqrt(3));
+    # feeding raw R to distmesh under-sizes by 0.577 and manufactures
+    # a size jump at the patch ring
+    cr *= np.sqrt(3.0)
     z = np.zeros(len(p))
     z[t[:, 0]] = cr
     z[t[:, 1]] = cr
