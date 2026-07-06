@@ -26,7 +26,11 @@ def simp_qual(p, t):
         warnings.simplefilter("ignore")
         mult1 = (b + c - a) * (c + a - b) * (a + b - c) / (a + b + c)
         denom1 = np.sqrt((a + b + c) * (b + c - a) * (c + a - b) * (a + b - c))
-        r = 0.5 * mult1
+        # inradius r = 0.5*sqrt[(b+c-a)(c+a-b)(a+b-c)/(a+b+c)];
+        # the sqrt was missing, making the "quality" scale with
+        # element SIZE (0.577 for a unit equilateral, ~0.02 on a
+        # fine lattice) instead of being 1.0 for equilateral.
+        r = 0.5 * np.sqrt(mult1)
         R = a * b * c / denom1
         return 2 * r / R
 
