@@ -194,8 +194,8 @@ def _reconstruct_sizing(points, cells):
     return fh
 
 
-def remesh_patch(points, cells, poly, target_h=None, max_iter=40,
-                 seed=0):
+def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
+                 max_iter=40, seed=0):
     """Port of msh.remesh_patch: re-mesh the part of the mesh
     inside polygon ``poly`` (an (N, 2) array) and stitch it back.
     Sizing comes from the existing local circumradii unless
@@ -224,8 +224,20 @@ def remesh_patch(points, cells, poly, target_h=None, max_iter=40,
     cavity = _boundary_polygons(sub_p, sub_t)
 
     if target_h is not None:
+        # grade from the existing boundary sizes down/up to
+        # target_h so the seam has no size jump:
+        # h = max(target, h_old - grade * dist_to_cavity_boundary)
+        f_old = _reconstruct_sizing(sub_p, sub_t)
+
         def fh(q):
-            return np.full(len(np.atleast_2d(q)), float(target_h))
+            import shapely as _sh
+
+            q = np.atleast_2d(q)
+            d = _sh.distance(
+                _sh.points(q[:, 0], q[:, 1]), cavity.boundary
+            )
+            return np.maximum(float(target_h),
+                              np.asarray(f_old(q)) - grade * d)
         h0 = float(target_h)
     else:
         fh = _reconstruct_sizing(sub_p, sub_t)
