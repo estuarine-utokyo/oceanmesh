@@ -306,6 +306,7 @@ def _parse_kwargs(kwargs):
             "improve_every",
             "qual_tol",
             "exit_quality",
+            "max_stalls",
             "heal_fixed_edges_every",
             "rewind_threshold",
         }:
@@ -810,6 +811,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         "improve_every": 10,       # OM2D imp cadence
         "qual_tol": 0.01,          # OM2D qual_tol stagnation gate
         "exit_quality": 0.30,      # OM2D EXIT_QUALITY termination
+        "max_stalls": 3,           # plateau cutoff (user policy)
         "heal_fixed_edges_every": 2,  # OM2D delIT cadence
         "rewind_threshold": 0.10,  # abort improvement on >10% loss
     }
@@ -872,6 +874,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         f"Commencing mesh generation with {N} vertices will perform {max_iter} iterations."
     )
     qual_hist = []
+    stall_count = 0
     for count in range(max_iter):
         start = time.time()
 
@@ -909,6 +912,10 @@ def generate_mesh(domain, edge_length, **kwargs):
             (float(np.mean(q)),
              float(np.mean(q) - 3.0 * np.std(q)),
              float(np.min(q)))
+        )
+        logger.info(
+            "iter %3d: NP=%d qual mean=%.4f p3sig=%.4f min=%.4f",
+            count + 1, len(p), *qual_hist[-1],
         )
 
         if (eg_segs is not None
@@ -952,11 +959,30 @@ def generate_mesh(domain, edge_length, **kwargs):
             prev = qual_hist[-opts["improve_every"]][0]
             if abs(qual_hist[-1][0] - prev) < (
                     opts["improve_every"] * opts["qual_tol"]):
+                stall_count += 1
+                if stall_count >= int(opts.get("max_stalls", 3)):
+                    # convergence limit: mean quality has not moved
+                    # across max_stalls consecutive improvement
+                    # cycles — further iterations are wasted (the
+                    # user-mandated plateau cutoff; residual
+                    # quality is stage-2/manual-editing territory)
+                    p, t, _ = fix_mesh(p, t, dim=_DIM,
+                                       delete_unused=True)
+                    logger.info(
+                        "Termination: quality plateau after %d "
+                        "improvement cycles (mean %.4f, min %.4f) "
+                        "at iter %d — cutting off.",
+                        stall_count, qual_hist[-1][0],
+                        qual_hist[-1][2], count + 1,
+                    )
+                    return p, t
                 p = _improve_points(
                     p, t, fh, fd, geps, pfix, lock_boundary,
                     opts["rewind_threshold"],
                 )
                 continue
+            else:
+                stall_count = 0
         # -------------------------------------------------------------
 
         # Number of iterations reached, stop.
