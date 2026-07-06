@@ -312,6 +312,12 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
         free = is_new & (d_ring < band) & (d_ring > 1e-9) & ~bnd
         if free.any():
             mp, _ = direct_smoother_lur(mp, mt, pfix=mp[~free])
+        # welded ring nodes carry old+new incident triangles
+        # (valence 9-10): flip down. Flips only — a collapse pass
+        # here manufactured new C4 pairs (reverted experiment).
+        from .mesh_improve import bound_connectivity
+
+        mp, mt = bound_connectivity(mp, mt, max_valence=7)
         merged = (mp, mt)
     else:
         merged = merge_meshes(new_p, new_t, hole_p, hole_t)
