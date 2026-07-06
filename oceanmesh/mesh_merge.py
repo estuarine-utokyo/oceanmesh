@@ -195,7 +195,7 @@ def _reconstruct_sizing(points, cells):
 
 
 def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
-                 max_iter=40, seed=0):
+                 max_iter=100, seed=0, constrain_ring=True):
     """Port of msh.remesh_patch: re-mesh the part of the mesh
     inside polygon ``poly`` (an (N, 2) array) and stitch it back.
     Sizing comes from the existing local circumradii unless
@@ -255,11 +255,37 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
 
     x0, y0, x1, y1 = cavity.bounds
     domain = Domain((x0, x1, y0, y1), fd)
+    gen_kw = {}
+    if constrain_ring:
+        # OM2D-'match' semantics: the cavity ring is kept VERBATIM
+        # (ring edges as constrained Delaunay edges, NOT
+        # lock_boundary), so the regenerated patch boundary
+        # coincides exactly with the hole mesh and stitching is a
+        # weld (cat) — the hole mesh is never re-triangulated.
+        from .boundary_conditions import boundary_loops
+
+        loops = boundary_loops(sub_t)
+        ring_pts = []
+        ring_edges = []
+        off = 0
+        for lp in loops:
+            n = len(lp)
+            ring_pts.append(sub_p[lp])
+            ring_edges.extend(
+                [[off + i, off + (i + 1) % n] for i in range(n)]
+            )
+            off += n
+        gen_kw["pfix"] = np.vstack(ring_pts)
+        gen_kw["egfix"] = np.asarray(ring_edges, dtype=int)
     new_p, new_t = generate_mesh(
         domain, fh, min_edge_length=h0, max_iter=max_iter,
-        seed=seed,
+        seed=seed, **gen_kw,
     )
-    merged = merge_meshes(new_p, new_t, hole_p, hole_t)
+    if constrain_ring:
+        merged = cat_meshes(new_p, new_t, hole_p, hole_t,
+                            tol=1e-3)
+    else:
+        merged = merge_meshes(new_p, new_t, hole_p, hole_t)
     logger.info(
         f"remesh_patch: {int(inside.sum())} elements -> "
         f"{len(new_t)} regenerated"
