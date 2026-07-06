@@ -1153,6 +1153,12 @@ class Shoreline(Region):
 
         polys = _clip_polys(polys, self.bbox)
 
+        # keep the PRE-densification region ring: _classify_shoreline
+        # densifies/clips self.boubox, after which it no longer
+        # reconstructs the region polygon (edge-wise NaN segments,
+        # duplicate vertices) — the multiscale covering test needs
+        # the true region (Obitsu I11/J11 incident).
+        self.region_polygon = np.asarray(self.boubox, dtype=float)
         self.inner, self.mainland, self.boubox = _classify_shoreline(
             self.bbox, self.boubox, polys, self.h0 / 2, self.minimum_area_mult, stereo
         )

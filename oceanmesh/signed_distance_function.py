@@ -259,23 +259,15 @@ def signed_distance_function(shoreline, invert=False):
     import shapely as _sh
     from shapely.geometry import Polygon as _Poly
 
-    # the boubox array is NaN-delimited; build the region as the
-    # union of its segments (naive concatenation self-intersects
-    # and buffer(0) drops lobes)
-    _segs = []
-    _run = []
-    for _q in poly2:
-        if np.isnan(_q[0]):
-            if len(_run) >= 3:
-                _segs.append(_run)
-            _run = []
-        else:
-            _run.append((float(_q[0]), float(_q[1])))
-    if len(_run) >= 3:
-        _segs.append(_run)
-    _pg = _sh.union_all([
-        _sh.make_valid(_Poly(_s)) for _s in _segs
-    ])
+    # region polygon: use the PRE-densification ring stored by
+    # Shoreline (the post-classification boubox is edge-segmented
+    # with duplicate vertices and cannot be re-assembled reliably)
+    _reg = getattr(shoreline, "region_polygon", None)
+    if _reg is None:
+        _reg = poly2
+    _ring = np.asarray(_reg, dtype=float)
+    _ring = _ring[~np.isnan(_ring[:, 0])]
+    _pg = _sh.make_valid(_Poly(_ring))
 
     def func_covering(x):
         # Sanitize inputs: handle non-finite query points gracefully
