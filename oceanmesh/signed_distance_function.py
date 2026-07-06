@@ -250,6 +250,20 @@ def signed_distance_function(shoreline, invert=False):
         poly2[~np.isnan(poly2[:, 0]), :], balanced_tree=False, leafsize=50
     )
 
+    # inside/outside via shapely: the densified boubox ring
+    # carries duplicate vertices whose degenerate edges broke the
+    # inpoly2 test (points deep inside a polygon boubox classified
+    # OUTSIDE -> multiscale Difference failed to exclude the inner
+    # region from the outer nest -> outer smoothed coast meshed
+    # over inner-region land; Obitsu I11/J11 incident).
+    import shapely as _sh
+    from shapely.geometry import Polygon as _Poly
+
+    _ring = poly2[~np.isnan(poly2[:, 0]), :]
+    _pg = _Poly(_ring)
+    if not _pg.is_valid:
+        _pg = _pg.buffer(0)
+
     def func_covering(x):
         # Sanitize inputs: handle non-finite query points gracefully
         x = np.asarray(x, dtype=float)
@@ -261,8 +275,8 @@ def signed_distance_function(shoreline, invert=False):
 
         if np.any(finite_mask):
             x_f = x[finite_mask]
-            ib, _ = inpoly2(x_f, boubox, e_box)
-            in_boubox[finite_mask] = ib
+            in_boubox[finite_mask] = _sh.contains_xy(
+                _pg, x_f[:, 0], x_f[:, 1])
             d_f, _ = tree2.query(x_f, k=1)
             d[finite_mask] = d_f
 
