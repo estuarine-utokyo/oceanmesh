@@ -166,6 +166,7 @@ def finalize_sizing(
     max_edge_length_nearshore=None,
     gradation=0.15,
     courant=None,
+    weirs=None,
     verbose=True,
 ):
     """OM2D ``edgefx.finalize`` pipeline on a list of sizing grids.
@@ -210,6 +211,31 @@ def finalize_sizing(
             z = _dem_on_grid(grid, dem)
             cap = elevation_bands(arr, z, default=np.inf) / factor
             grid.values = np.minimum(grid.values, cap)
+
+    if weirs is not None:
+        # OM2D weir spacing override: inside a buffer around each
+        # crestline, cap h at k * crest spacing so the racetrack
+        # (built at that spacing) meets comparably sized elements
+        # and the across-crest node pairing stays clean.
+        import shapely
+        from shapely.geometry import LineString
+
+        xg, yg = grid.create_grid()
+        pts = shapely.points(xg.ravel(), yg.ravel())
+        vals = np.asarray(grid.values, dtype=float)
+        for w in weirs:
+            crest = np.asarray(w["crestline"], dtype=float)
+            spacing = float(
+                w.get("spacing_m") or 2.0 * w["width_m"]
+            ) / factor
+            k = float(w.get("k", 2.0))
+            d = shapely.distance(pts, LineString(crest)).reshape(
+                xg.shape
+            )
+            cap = k * spacing
+            vals = np.where(d < 4.0 * spacing,
+                            np.minimum(vals, cap), vals)
+        grid.values = vals
 
     if hmin is not None:
         grid.values = np.maximum(grid.values, hmin / factor)
