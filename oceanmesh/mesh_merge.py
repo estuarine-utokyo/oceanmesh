@@ -315,9 +315,15 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
         # welded ring nodes carry old+new incident triangles
         # (valence 9-10): flip down. Flips only — a collapse pass
         # here manufactured new C4 pairs (reverted experiment).
-        from .mesh_improve import bound_connectivity
+        from .mesh_improve import (
+            area_length_quality,
+            bound_connectivity,
+        )
 
-        mp, mt = bound_connectivity(mp, mt, max_valence=7)
+        q_pre = area_length_quality(mp, mt).min()
+        mp2, mt2 = bound_connectivity(mp, mt, max_valence=7)
+        if area_length_quality(mp2, mt2).min() >= q_pre - 1e-12:
+            mp, mt = mp2, mt2
         merged = (mp, mt)
     else:
         merged = merge_meshes(new_p, new_t, hole_p, hole_t)
