@@ -101,6 +101,11 @@ def enforce_courant_bounds(
     factor = _deg_factor(grid)
     hh_m = np.asarray(grid.values, dtype=float) * factor
     z = _dem_on_grid(grid, dem)
+    # sanitize DEM: fill values (|z| ~ 1e6+) masqueraded as depth
+    # and produced km/s celerities, collapsing the automatic dt by
+    # 1000x; clamp to physical ocean depths
+    z = np.where(np.isfinite(z), z, 0.0)
+    z = np.clip(z, -11000.0, 11000.0)
     u = wave_celerity(z, wave_amplitude=wave_amplitude)
 
     dt = float(timestep)
