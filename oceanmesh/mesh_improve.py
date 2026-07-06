@@ -244,7 +244,21 @@ def bound_connectivity(points, cells, max_valence=7, pfix=None,
     if n_flips:
         pin = (np.asarray(pfix, dtype=float)
                if pfix is not None and len(pfix) else None)
-        p, t = direct_smoother_lur(p, t, pfix=pin)
+        if region_nodes is not None:
+            # region-restricted call: the implicit smoothing pass
+            # must not relocate vertices outside the region either
+            # (a global pass moved interior nodes ~50 m across the
+            # whole mesh — the phantom-C4 source in remesh_patch)
+            _reg = set(int(q) for q in region_nodes)
+            outside = np.array(
+                [v for v in range(len(p)) if v not in _reg], int
+            )
+            pin_r = p[outside]
+            if pin is not None:
+                pin_r = np.vstack([pin_r, pin])
+            p, t = direct_smoother_lur(p, t, pfix=pin_r)
+        else:
+            p, t = direct_smoother_lur(p, t, pfix=pin)
     logger.info(f"bound_connectivity: {n_flips} edge flips")
     return p, t
 
