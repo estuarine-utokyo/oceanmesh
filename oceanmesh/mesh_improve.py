@@ -88,6 +88,15 @@ def direct_smoother_lur(points, cells, pfix=None):
     per-element stiffness system (D/T blocks, mu=1)."""
     p = np.array(points, dtype=float)
     t = np.asarray(cells, dtype=int)
+    # normalize coordinates: kinf pinning is an absolute penalty,
+    # and at UTM scale (coords ~1e6, K entries ~1e5) the stiffness
+    # ratio collapses — 'pinned' vertices drifted tens of metres.
+    shift = p.mean(axis=0)
+    scale = float(np.abs(p - shift).max())
+    scale = scale if scale > 0 else 1.0
+    p = (p - shift) / scale
+    if pfix is not None and len(pfix) > 0:
+        pfix = (np.asarray(pfix, dtype=float) - shift) / scale
     n = len(p)
     mu = 1.0
     kinf = 1.0e12
@@ -128,6 +137,7 @@ def direct_smoother_lur(points, cells, pfix=None):
 
     c = sp.linalg.spsolve(K.tocsr(), F)
     out = c.reshape(-1, 2)
+    out = out * scale + shift
     return out, np.asarray(cells, dtype=int)
 
 
