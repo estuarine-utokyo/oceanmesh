@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "cat_meshes",
+    "clean_mesh",
+    "matche_meshes",
     "merge_meshes",
     "minus_meshes",
     "remesh_patch",
@@ -332,3 +334,45 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
         f"{len(new_t)} regenerated"
     )
     return merged
+
+
+def matche_meshes(p1, t1, p2, t2, tol=1e-3):
+    """Port of msh.plus type 'matche': carve mesh 1's footprint out
+    of BASE mesh 2, then weld mesh 1 into the hole (boundaries must
+    coincide within ``tol``)."""
+    hp, ht = minus_meshes(p2, t2, p1, t1)
+    return cat_meshes(p1, t1, hp, ht, tol=tol)
+
+
+def clean_mesh(points, cells, *, djc=0.0, con=0, mqa=0.0, ds=0,
+               pfix=None):
+    """OM2D ``msh.clean`` facade over the ported utilities.
+
+    djc: disjoint-component area fraction cutoff
+         (make_mesh_boundaries_traversable);
+    con: max nodal valence (0 = skip; bound_connectivity);
+    mqa: min area-length quality (0 = skip; collapse_thin_triangles);
+    ds : smoothing passes (direct_smoother_lur, boundary+pfix
+         pinned).
+    """
+    from .clean import (
+        delete_faces_connected_to_one_face,
+        make_mesh_boundaries_traversable,
+    )
+    from .mesh_improve import (
+        bound_connectivity,
+        collapse_thin_triangles,
+        direct_smoother_lur,
+    )
+
+    p = np.asarray(points, float)
+    t = np.asarray(cells, int)
+    p, t = make_mesh_boundaries_traversable(p, t, dj_cutoff=djc)
+    p, t = delete_faces_connected_to_one_face(p, t)
+    if mqa:
+        p, t = collapse_thin_triangles(p, t, min_qual=mqa)
+    if con:
+        p, t = bound_connectivity(p, t, max_valence=con, pfix=pfix)
+    for _ in range(int(ds)):
+        p, _ = direct_smoother_lur(p, t, pfix=pfix)
+    return _fix(p, t)

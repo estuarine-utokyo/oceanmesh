@@ -45,6 +45,8 @@ from oceanmesh.bathymetry import (
 )
 from oceanmesh.mesh_merge import (
     cat_meshes,
+    clean_mesh,
+    matche_meshes,
     merge_meshes,
     minus_meshes,
     remesh_patch,
@@ -182,6 +184,8 @@ __all__ = [
     "unstructured_slopes",
     "channel_sizing_function",
     "cat_meshes",
+    "clean_mesh",
+    "matche_meshes",
     "merge_meshes",
     "minus_meshes",
     "remesh_patch",
