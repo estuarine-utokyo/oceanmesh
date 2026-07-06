@@ -679,6 +679,12 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         "lock_boundary": True,
     }
     opts.update(kwargs)
+    # pfix/egfix are forwarded ONLY to the first (outermost) nest
+    # and to the final blending pass — injecting them into inner
+    # nests whose domains do not contain them corrupts those
+    # meshes.
+    ms_pfix = kwargs.pop("pfix", None)
+    ms_egfix = kwargs.pop("egfix", None)
     _parse_kwargs(kwargs)
 
     # Build domain metadata for stereo/CRS awareness during blending
@@ -707,11 +713,16 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         logger.info(f"--> Building domain #{domain_number}")
         global_minimum = np.amin([global_minimum, edge_length.hmin])
         # Use the domain's own stereo flag (global first domain may be stereo=True)
+        _nest_kw = dict(kwargs)
+        if domain_number == 0 and ms_pfix is not None:
+            _nest_kw["pfix"] = ms_pfix
+            if ms_egfix is not None:
+                _nest_kw["egfix"] = ms_egfix
         _tmpp, _ = generate_mesh(
             sdf,
             edge_length,
             stereo=getattr(domains[domain_number], "stereo", False),
-            **kwargs,
+            **_nest_kw,
         )
         _p.append(_tmpp)
 
@@ -725,6 +736,10 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
     # If union is global stereo, ensure stereo flag passed to final blending mesh generation
     if getattr(union, "stereo", False):
         _kwargs["stereo"] = True
+    if ms_pfix is not None:
+        _kwargs["pfix"] = ms_pfix
+        if ms_egfix is not None:
+            _kwargs["egfix"] = ms_egfix
     _p, _t = generate_mesh(
         domain=union,
         edge_length=master_edge_length,
