@@ -158,7 +158,7 @@ def make_bc_auto(
 
 
 def write_fort14(filepath, points, cells, depth=None, boundaries=None,
-                 title="Created with oceanmesh"):
+                 weirs=None, title="Created with oceanmesh"):
     """ADCIRC/FVCOM fort.14 writer WITH boundary nodestrings (the
     packaged write_to_fort14 writes zero boundaries). ``boundaries``
     follows the make_bc_auto dict; islands get ibtype 21, land 20,
@@ -185,8 +185,13 @@ def write_fort14(filepath, points, cells, depth=None, boundaries=None,
         lines.extend(str(int(v) + 1) for v in seg)
     land = list(bnd.get("land", []))
     isl = list(bnd.get("island", []))
-    lines.append(f"{len(land) + len(isl)} = Number of land boundaries")
-    tot = sum(len(s) for s in land) + sum(len(s) + 1 for s in isl)
+    weirs = weirs or []
+    lines.append(
+        f"{len(land) + len(isl) + len(weirs)} = "
+        "Number of land boundaries"
+    )
+    tot = (sum(len(s) for s in land) + sum(len(s) + 1 for s in isl)
+           + sum(len(w['front']) for w in weirs))
     lines.append(f"{tot} = Total number of land boundary nodes")
     k = 0
     for seg in land:
@@ -200,6 +205,22 @@ def write_fort14(filepath, points, cells, depth=None, boundaries=None,
             f"{len(closed)} 21 = Number of nodes for island boundary {k}"
         )
         lines.extend(str(int(v) + 1) for v in closed)
+    for w in weirs:
+        # ADCIRC ibtype 24 internal barrier: front node, back node
+        # (ibconn), crest height, sub/super-critical coefficients
+        k += 1
+        fr = np.asarray(w["front"], dtype=int)
+        bk = np.asarray(w["back"], dtype=int)
+        cr = np.asarray(w.get("crest", np.zeros(len(fr))), float)
+        csub = float(w.get("subcritical", 1.0))
+        csup = float(w.get("supercritical", 1.0))
+        lines.append(
+            f"{len(fr)} 24 = Number of nodes for weir boundary {k}"
+        )
+        for a, b, c in zip(fr, bk, cr):
+            lines.append(
+                f"{int(a) + 1} {int(b) + 1} {c:.3f} {csub} {csup}"
+            )
     with open(filepath, "w") as f:
         f.write("\n".join(lines) + "\n")
     logger.info(f"Wrote {filepath}")

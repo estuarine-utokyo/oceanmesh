@@ -37,11 +37,19 @@ from oceanmesh.edgefx import (
 from oceanmesh.edges import draw_edges, get_poly_edges
 from oceanmesh.filterfx import filt2
 from oceanmesh.bathymetry import (
+    contour_to_shapefile,
     extract_contour,
     interp_bathymetry,
     lim_bathy_slope,
     unstructured_slopes,
 )
+from oceanmesh.mesh_merge import (
+    cat_meshes,
+    merge_meshes,
+    minus_meshes,
+    remesh_patch,
+)
+from oceanmesh.weirs import build_weir_geometry, match_weir_nodes
 from oceanmesh.boundary_conditions import (
     boundary_loops,
     make_bc_auto,
@@ -173,6 +181,13 @@ __all__ = [
     "lim_bathy_slope",
     "unstructured_slopes",
     "channel_sizing_function",
+    "cat_meshes",
+    "merge_meshes",
+    "minus_meshes",
+    "remesh_patch",
+    "build_weir_geometry",
+    "match_weir_nodes",
+    "contour_to_shapefile",
     "get_poly_edges",
     "draw_edges",
     "generate_mesh",

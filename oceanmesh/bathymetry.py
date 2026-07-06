@@ -13,6 +13,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "contour_to_shapefile",
     "extract_contour",
     "interp_bathymetry",
     "lim_bathy_slope",
@@ -169,3 +170,33 @@ def extract_contour(dem, level=0.0):
     if not segs:
         return np.empty((0, 2))
     return np.vstack(segs)
+
+
+def contour_to_shapefile(dem, level, out_path, min_length=10):
+    """Floodplain workflow helper (OM2D fp): write the DEM contour
+    at ``level`` (e.g. +10 m upland limit) as polyline shapefile
+    usable as a Shoreline source, so the domain extends over the
+    floodplain up to that contour. MergeFP == merge_meshes,
+    interpFP == interp_bathymetry."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    arr = extract_contour(dem, level=level)
+    lines = []
+    run = []
+    for q in arr:
+        if np.isnan(q[0]):
+            if len(run) >= max(2, min_length):
+                lines.append(LineString(run))
+            run = []
+        else:
+            run.append(tuple(q))
+    if len(run) >= max(2, min_length):
+        lines.append(LineString(run))
+    gdf = gpd.GeoDataFrame(geometry=lines, crs=dem.crs)
+    gdf.to_file(out_path)
+    logger.info(
+        f"contour_to_shapefile: {len(lines)} polylines at "
+        f"z={level} -> {out_path}"
+    )
+    return out_path
