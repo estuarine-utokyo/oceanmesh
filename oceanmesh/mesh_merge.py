@@ -367,7 +367,9 @@ def clean_mesh(points, cells, *, djc=0.0, con=0, mqa=0.0, ds=0,
 
     p = np.asarray(points, float)
     t = np.asarray(cells, int)
-    p, t = make_mesh_boundaries_traversable(p, t, dj_cutoff=djc)
+    p, t = make_mesh_boundaries_traversable(
+        p, t, min_disconnected_area=djc
+    )
     p, t = delete_faces_connected_to_one_face(p, t)
     if mqa:
         p, t = collapse_thin_triangles(p, t, min_qual=mqa)
