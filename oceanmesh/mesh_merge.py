@@ -282,8 +282,33 @@ def remesh_patch(points, cells, poly, target_h=None, grade=0.15,
         seed=seed, **gen_kw,
     )
     if constrain_ring:
-        merged = cat_meshes(new_p, new_t, hole_p, hole_t,
+        mp, mt = cat_meshes(new_p, new_t, hole_p, hole_t,
                             tol=1e-3)
+        # transition-band relaxation: distmesh equilibrium is
+        # disturbed next to the constrained ring edges (violations
+        # concentrate 0-700 m inside the ring). One LUR pass with
+        # ONLY the near-ring interior of the regenerated patch
+        # free; ring nodes, hole mesh and domain boundary pinned.
+        from scipy.spatial import cKDTree
+
+        from .edges import get_boundary_edges
+        from .mesh_improve import direct_smoother_lur
+
+        ring_all = np.vstack(ring_pts)
+        seg = np.linalg.norm(
+            ring_all - np.roll(ring_all, 1, axis=0), axis=1
+        )
+        band = 2.0 * np.median(seg)
+        d_ring, _ = cKDTree(ring_all).query(mp)
+        d_new, _ = cKDTree(new_p).query(mp)
+        d_hole, _ = cKDTree(hole_p).query(mp)
+        is_new = d_new < d_hole  # regenerated side
+        bnd = np.zeros(len(mp), bool)
+        bnd[np.unique(get_boundary_edges(mt))] = True
+        free = is_new & (d_ring < band) & (d_ring > 1e-9) & ~bnd
+        if free.any():
+            mp, _ = direct_smoother_lur(mp, mt, pfix=mp[~free])
+        merged = (mp, mt)
     else:
         merged = merge_meshes(new_p, new_t, hole_p, hole_t)
     logger.info(
