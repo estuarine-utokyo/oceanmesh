@@ -1280,59 +1280,62 @@ def _al_quality(p, t):
 
 
 def _improve_points(p, t, fh, fd, geps, pfix, lock_boundary,
-                    rewind_threshold):
-    """OM2D meshgen.build improvement cycle (every `imp` iterations
-    on quality stagnation): delete low-connectivity interior nodes,
-    delete one node of too-short bars (LN < 0.5), split too-long
-    bars (LN > 2). Rewinds deletions when they would remove more
-    than ``rewind_threshold`` of the nodes."""
+                    rewind_threshold, L0mult=1.2):
+    """Exact port of the OM2D improvement block
+    (meshgen.m:948-1000):
+    - nn: nodes touching <= 4 elements, excluding boundary nodes
+      and pfix (get_small_connectivity, meshgen.m:1142-1151)
+    - nn1: BOTH endpoints of every bar with LN < 0.5, excluding
+      ONLY pfix (meshgen.m:963 — boundary nodes are NOT protected)
+    - splits: one MIDPOINT per bar with floor(LN) >= 2
+      (meshgen.m:971-987, jj=2:2)
+    - LN = L / L0 with L0 = hbars * Fscale * median(L)/
+      median(hbars) — the FORCE-STEP normalisation
+      (meshgen.m:944), not raw fh
+    - no candidate filtering and no internal rewind: the loop-level
+    mod(it, imp+1) rewind (meshgen.m:818-830) is the only guard."""
     n0 = len(p)
     protected = set()
     for fix in pfix:
         protected.add(_closest_node(fix, p))
     _, bpts = _external_topology(p, t)
+    bnd_protected = set(protected)
     for b in bpts:
-        protected.add(_closest_node(b, p))
+        bnd_protected.add(_closest_node(b, p))
 
     conn = np.bincount(t.ravel(), minlength=len(p))
     low = {int(v) for v in np.where(conn <= 4)[0]
-           if conn[v] > 0 and int(v) not in protected}
+           if conn[v] > 0 and int(v) not in bnd_protected}
 
     bars = _get_bars(t)
     barvec = p[bars[:, 0]] - p[bars[:, 1]]
     L = np.sqrt((barvec**2).sum(1))
-    ideal = np.asarray(fh(p[bars].sum(1) / 2), dtype=float)
-    ideal[~np.isfinite(ideal) | (ideal <= 0)] = np.nanmedian(
-        ideal[np.isfinite(ideal) & (ideal > 0)]
-    )
-    LN = L / ideal
+    hbars = np.asarray(fh(p[bars].sum(1) / 2), dtype=float)
+    valid = np.isfinite(hbars) & (hbars > 0)
+    if not valid.all():
+        hbars[~valid] = np.nanmedian(hbars[valid])
+    L0 = hbars * L0mult * (np.nanmedian(L) / np.nanmedian(hbars))
+    LN = L / L0
 
+    n_low = len(low)
     for a, b in bars[LN < 0.5]:
-        b = int(b)
-        if b not in protected and b not in low:
-            low.add(b)
+        for v in (int(a), int(b)):
+            if v not in protected:
+                low.add(v)
+    n_short = len(low) - n_low
 
     new_pts = []
-    for (a, b) in bars[LN > 2.0]:
+    for (a, b) in bars[np.floor(LN) >= 2]:
         new_pts.append(0.5 * (p[int(a)] + p[int(b)]))
-
-    if low and len(low) > rewind_threshold * n0:
-        logger.info(
-            f"improvement rewind: {len(low)} deletions > "
-            f"{rewind_threshold:.0%} of {n0}; keeping nodes"
-        )
-        low = set()
 
     keep = np.setdiff1d(np.arange(n0), np.fromiter(low, int)
                         if low else np.array([], dtype=int))
     p_new = p[keep]
     if new_pts:
-        cand = np.asarray(new_pts)
-        inside = fd(cand) < -geps
-        p_new = np.vstack([p_new, cand[inside]])
+        p_new = np.vstack([p_new, np.asarray(new_pts)])
     logger.info(
-        f"improvement: -{len(low)} short/low-degree, "
-        f"+{len(p_new) - (n0 - len(low))} splits"
+        f"improvement: -{n_low} small-connectivity, "
+        f"-{n_short} too-close, +{len(new_pts)} splits"
     )
     return p_new
 
