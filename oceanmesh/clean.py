@@ -110,8 +110,15 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                     "the mesh; returning the uncleaned input"
                 )
                 return v_in, f_in
-            _, boundary_vertices = _external_topology(vertices, faces)
-            touching = np.isin(faces, boundary_vertices).any(axis=1)
+            boundary_edges, _ = _external_topology(vertices, faces)
+            # boundary vertex INDICES (_external_topology's second
+            # return is coordinates — matching faces against those
+            # made this loop a silent no-op: 0 deletions vs the
+            # genuine clean's 101 on the NZ mesh)
+            bnd_idx = np.unique(
+                np.asarray(boundary_edges, dtype=int).reshape(-1)
+            )
+            touching = np.isin(faces, bnd_idx).any(axis=1)
             q = simp_qual(vertices, faces)
             bad = touching & (q < min_qual_bound)
             keep_idx = _pfix_idx()
