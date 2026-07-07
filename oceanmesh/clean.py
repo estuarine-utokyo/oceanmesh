@@ -72,7 +72,7 @@ def mesh_clean(
 
 
 def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
-                       dj_cutoff=0.25, max_passes=3, pfix=None,
+                       dj_cutoff=0.25, max_passes=20, pfix=None,
                        smooth=True):
     """OM2D ``msh.clean('default')`` as invoked by ``meshgen.build``.
 
@@ -168,10 +168,18 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                     vertices, faces, pfix=pfix
                 )
             else:
-                vertices, faces = laplacian2(vertices, faces)
+                # ds=2 (msh.m:1213-1216): the smooth2d
+                # hill-climbing smoother, OM2D's actual default
+                from .smooth2d import smooth2d
+
+                vertices, faces = smooth2d(vertices, faces)
         q = simp_qual(vertices, faces)
         if q.min() >= min_qual_bound or len(faces) == n_faces_in:
             break
+        logger.info(
+            "Poor or overlapping elements, cleaning again "
+            "(min qual = %.4f)", float(q.min()),
+        )
 
     return vertices, faces
 
