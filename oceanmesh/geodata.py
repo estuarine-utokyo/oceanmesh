@@ -498,6 +498,69 @@ def _create_ranges(start, stop, N, endpoint=True):
     return steps[:, None] * np.arange(N) + start[:, None]
 
 
+def _nan_segments(polys):
+    """Yield NaN-delimited segments (each with its trailing NaN row
+    when present) from a stacked polys array."""
+    arr = np.asarray(polys, dtype=float)
+    isn = np.isnan(arr[:, 0])
+    start = 0
+    for i in range(len(arr)):
+        if isn[i]:
+            if i > start:
+                yield arr[start:i + 1]
+            start = i + 1
+    if start < len(arr):
+        yield arr[start:]
+
+
+def _cull_small_features(polys, boubox, h0, island_mult=4.0,
+                         mainland_mult=100.0):
+    """OM2D Read_shapefile area culling on raw polygons.
+
+    Islands wholly inside the domain polygon with shoelace area
+    < island_mult*h0^2 and partially-inside (mainland) fragments
+    < mainland_mult*h0^2 are dropped (Read_shapefile.m:219,231).
+    Open segments are kept untouched. h0 is in the same units as
+    the coordinates (degrees).
+    """
+    from shapely.geometry import Polygon as _Pg
+
+    b = np.asarray(boubox, dtype=float)
+    b = b[~np.isnan(b[:, 0])]
+    try:
+        bpoly = _Pg(b)
+        if not bpoly.is_valid:
+            bpoly = bpoly.buffer(0)
+    except Exception:
+        return polys
+    a_island = island_mult * h0 * h0
+    a_main = mainland_mult * h0 * h0
+    out = []
+    for seg in _nan_segments(polys):
+        pts = seg[~np.isnan(seg[:, 0])]
+        closed = len(pts) > 3 and np.allclose(pts[0], pts[-1])
+        if not closed:
+            out.append(seg)
+            continue
+        try:
+            pg = _Pg(pts)
+            if not pg.is_valid:
+                pg = pg.buffer(0)
+            area = pg.area
+            inside = bpoly.contains(pg)
+        except Exception:
+            out.append(seg)
+            continue
+        if inside and area < a_island:
+            continue
+        if not inside and area < a_main:
+            continue
+        out.append(seg)
+    if not out:
+        return polys
+    return np.vstack(out)
+
+
 def _resample_segments(polys, spacing):
     """OM2D my_interpm parity: resample every NaN-delimited segment
     to ~uniform ``spacing`` (degrees) — DECIMATING excess detail as
@@ -1087,7 +1150,7 @@ class Shoreline(Region):
         refinements=1,
         minimum_area_mult=4.0,
         smooth_shoreline=True,
-        smoothing_method="chaikin",
+        smoothing_method="moving_average",
         smoothing_window=5,
         coarsen_outside=True,
         coarsen_inflation=1.10,
@@ -1169,19 +1232,13 @@ class Shoreline(Region):
             )  # so that bbox overlaps with antarctica > and becomes the outer boundary
             self.boubox = np.asarray(_create_boubox(self.bbox))
 
-        if smooth_shoreline:
-            if smoothing_method == "chaikin":
-                polys = _smooth_shoreline(polys, self.refinements)
-            elif smoothing_method == "moving_average":
-                # OM2D geodata 'window' moving-average smoothing
-                polys = _moving_average_smooth(
-                    polys, window=smoothing_window
-                )
-            elif smoothing_method is not None:
-                raise ValueError(
-                    "smoothing_method must be 'chaikin', "
-                    "'moving_average', or None"
-                )
+        # OM2D Read_shapefile area culls on RAW polygons: islands
+        # wholly inside < 4*h0^2, partially-inside mainland
+        # < 100*h0^2 (Read_shapefile.m:219,231)
+        polys = _cull_small_features(
+            polys, self.boubox, self.h0,
+            island_mult=self.minimum_area_mult, mainland_mult=100.0
+        )
 
         if coarsen_outside:
             # OM2D coarsen_polygon: decimate detail outside the
@@ -1190,7 +1247,24 @@ class Shoreline(Region):
                 polys, self.boubox, inflation=coarsen_inflation
             )
 
-        polys = _densify(polys, self.h0, self.bbox)
+        # OM2D my_interpm: densify (insert-only, NEVER decimate) so
+        # gaps < h0/2 (geodata.m:382-397)
+        polys = _densify(polys, 0.5 * self.h0, self.bbox)
+
+        # OM2D smooth_coastline: 5-point boxcar AFTER densification
+        # (geodata.m:400-415); chaikin retained as an opt-in only
+        if smooth_shoreline:
+            if smoothing_method == "moving_average":
+                polys = _moving_average_smooth(
+                    polys, window=smoothing_window
+                )
+            elif smoothing_method == "chaikin":
+                polys = _smooth_shoreline(polys, self.refinements)
+            elif smoothing_method is not None:
+                raise ValueError(
+                    "smoothing_method must be 'chaikin', "
+                    "'moving_average', or None"
+                )
 
         polys = _clip_polys(polys, self.bbox)
 
@@ -1200,13 +1274,6 @@ class Shoreline(Region):
         # duplicate vertices) — the multiscale covering test needs
         # the true region (Obitsu I11/J11 incident).
         self.region_polygon = np.asarray(self.boubox, dtype=float)
-        # OM2D my_interpm parity: uniform resample (decimate +
-        # densify) at h0/2 before classification
-        # (OCEANMESH_NO_RESAMPLE=1 disables, for bisection)
-        import os as _os
-
-        if _os.environ.get("OCEANMESH_NO_RESAMPLE", "") != "1":
-            polys = _resample_segments(polys, 0.5 * self.h0)
         self.inner, self.mainland, self.boubox = _classify_shoreline(
             self.bbox, self.boubox, polys, self.h0 / 2, self.minimum_area_mult, stereo
         )
