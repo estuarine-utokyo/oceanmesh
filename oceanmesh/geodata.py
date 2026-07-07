@@ -1202,7 +1202,11 @@ class Shoreline(Region):
         self.region_polygon = np.asarray(self.boubox, dtype=float)
         # OM2D my_interpm parity: uniform resample (decimate +
         # densify) at h0/2 before classification
-        polys = _resample_segments(polys, 0.5 * self.h0)
+        # (OCEANMESH_NO_RESAMPLE=1 disables, for bisection)
+        import os as _os
+
+        if _os.environ.get("OCEANMESH_NO_RESAMPLE", "") != "1":
+            polys = _resample_segments(polys, 0.5 * self.h0)
         self.inner, self.mainland, self.boubox = _classify_shoreline(
             self.bbox, self.boubox, polys, self.h0 / 2, self.minimum_area_mult, stereo
         )

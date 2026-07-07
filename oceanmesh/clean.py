@@ -83,8 +83,20 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
     ``Fix_single_connec_edge_elements`` is a no-op in OM2D's default
     (sc_maxit=0) and is deliberately not run here.
     """
+    from scipy.spatial import cKDTree
+
     from .fix_mesh import fix_mesh, simp_qual
     from .mesh_improve import collapse_thin_triangles
+
+    # pfix arrives as COORDINATES (as in generate_mesh); resolve to
+    # indices against the current vertex array whenever needed
+    pfix = None if pfix is None or not len(pfix) else np.asarray(pfix)
+
+    def _pfix_idx():
+        if pfix is None:
+            return np.empty(0, dtype=int)
+        _, idx = cKDTree(vertices).query(pfix)
+        return np.unique(idx)
 
     for _ in range(max_passes):
         n_faces_in = len(faces)
@@ -94,26 +106,28 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             touching = np.isin(faces, boundary_vertices).any(axis=1)
             q = simp_qual(vertices, faces)
             bad = touching & (q < min_qual_bound)
+            keep_idx = _pfix_idx()
+            if len(keep_idx):
+                bad &= ~np.isin(faces, keep_idx).any(axis=1)
             if not bad.any():
                 break
             faces = faces[~bad]
             vertices, faces, _ = fix_mesh(vertices, faces,
                                           delete_unused=True)
         # 2. sliver collapse at the same threshold (msh.m:1186-1187)
-        vertices, faces = collapse_thin_triangles(
-            vertices, faces, min_qual=min_qual_bound
-        )
+        if pfix is None:
+            vertices, faces = collapse_thin_triangles(
+                vertices, faces, min_qual=min_qual_bound
+            )
         # 3. boundary traversability (msh.m:1191)
         vertices, faces = make_mesh_boundaries_traversable(
             vertices, faces, min_disconnected_area=dj_cutoff
         )
         # 4. smoothing with boundary + pfix pinned (msh.m:1212-1221)
+        # laplacian2 pins all boundary vertices internally and takes
+        # pfix as COORDINATES
         if smooth:
-            _, boundary_vertices = _external_topology(vertices, faces)
-            pin = boundary_vertices
-            if pfix is not None and len(pfix):
-                pin = np.unique(np.concatenate([pin, np.asarray(pfix)]))
-            vertices, faces = laplacian2(vertices, faces, pfix=pin)
+            vertices, faces = laplacian2(vertices, faces, pfix=pfix)
         q = simp_qual(vertices, faces)
         if q.min() >= min_qual_bound or len(faces) == n_faces_in:
             break

@@ -958,7 +958,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                          and (count + 1) % opts["improve_every"] == 0)
         if at_checkpoint and qual_hist[-1][2] > opts["exit_quality"]:
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-            p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix)
             logger.info(
                 "Termination: minimum quality %.3f > %.2f",
                 qual_hist[-1][2], opts["exit_quality"],
@@ -979,7 +979,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                     # quality is stage-2/manual-editing territory)
                     p, t, _ = fix_mesh(p, t, dim=_DIM,
                                        delete_unused=True)
-                    p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
+                    p, t = _maybe_om2d_clean(p, t, opts, pfix)
                     logger.info(
                         "Termination: quality plateau after %d "
                         "improvement cycles (mean %.4f, min %.4f) "
@@ -1000,7 +1000,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         # Number of iterations reached, stop.
         if count == (max_iter - 1):
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-            p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix)
             logger.info("Termination reached...maximum number of iterations.")
             return p, t
 
@@ -1044,7 +1044,7 @@ def generate_mesh(domain, edge_length, **kwargs):
     p, t = _get_topology(dt)
     t = _remove_triangles_outside(p, t, fd, geps)
     p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-    p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
+    p, t = _maybe_om2d_clean(p, t, opts, pfix)
     logger.info("Termination reached...maximum number of iterations.")
     return p, t
 
@@ -1275,14 +1275,15 @@ def _dense(Ix, J, S, shape=None, dtype=None):
 
 
 
-def _maybe_om2d_clean(p, t, opts, pfix, nfix):
+def _maybe_om2d_clean(p, t, opts, pfix):
     """OM2D meshgen.build parity: msh.clean('default') at every
     build exit (meshgen.m:1063-1068) unless cleanup='none'."""
     if opts.get("cleanup", "default") != "default":
         return p, t
     from .clean import om2d_default_clean
 
-    return om2d_default_clean(p, t, pfix=pfix if nfix else None)
+    keep = pfix if pfix is not None and len(pfix) else None
+    return om2d_default_clean(p, t, pfix=keep)
 
 
 def _remove_triangles_outside(p, t, fd, geps):
