@@ -322,8 +322,10 @@ def bound_courant_number(points, cells, depth, dt, cr_max=0.5,
 
     p = _from(pp)
 
-    # recursive final check (msh.m:3003)
-    if _depth < 1:
+    # recursive final check (msh.m:3003): the .m recurses
+    # UNBOUNDED — the early return above (both bounds satisfied)
+    # is the terminator; cap at 10 as a runaway guard only
+    if _depth < 10:
         return bound_courant_number(
             p, t, b, dt, cr_max=cr_max, cr_min=cr_min,
             max_iter=max_iter, geographic=geographic,
