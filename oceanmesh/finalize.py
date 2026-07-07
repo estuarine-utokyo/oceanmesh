@@ -161,40 +161,93 @@ def enforce_nearshore_max_edge(grid, shoreline, max_edge_length_ns,
     return grid
 
 
-def _gradation_cpp_lattice(grid, run_limit):
-    """Run the (isotropic) HJ gradient limiter on a CPP-scaled
-    lattice so the enforced size gradient is physically isotropic.
+try:
+    import numba as _nb
 
-    On a raw lon/lat lattice the x-step is physically dx*cos(lat),
-    so a scalar-elen limiter allows d(h)/ds ~ g/cos(lat) along x
-    (OM2D limgradStruct uses dx=h0*cos(lat) in its stencil,
-    edgefx.m:895-921). At |lat|~44 that is ~40% too permissive and
-    the sizing field came out ~12% coarser than OM2D's dump.
-    run_limit(values2d, elen) -> limited 2d values on the lattice.
-    """
-    lat0 = 0.5 * (grid.bbox[2] + grid.bbox[3])
-    c0 = float(np.cos(np.deg2rad(lat0)))
-    if c0 > 0.999 or c0 <= 0.05 or abs(lat0) > 90.0:
-        return None
-    x0, x1, y0, y1 = grid.bbox
-    dy = grid.dy
-    xs = np.arange(x0 * c0, x1 * c0 + dy, dy)
-    ys = np.arange(y0, y1 + dy, dy)
-    X, Y = np.meshgrid(xs, ys, indexing="ij")
-    grid.build_interpolant()
-    vals = grid.eval(
-        np.column_stack([X.ravel() / c0, Y.ravel()])
-    ).reshape(X.shape)
-    limited = run_limit(vals, dy)
-    from scipy.interpolate import RegularGridInterpolator
+    @_nb.njit(cache=True)
+    def _limgrad_struct_kernel(ny, xeglen, yeglen, ffun, fdfdx, imax):
+        """Faithful port of utilities/limgradStruct.m (Engwirda/
+        Roberts): active-set gradient limiting on the structured
+        graph, 8-node stencil, per-row x edge lengths (anisotropy
+        dx = h0*cos(lat)), bound by the LOWER node's dfdx."""
+        n = ffun.shape[0]
+        aset = np.zeros(n, np.int64)
+        ftol = ffun.min() * np.sqrt(2.220446049250313e-16)
+        dgeglen = np.sqrt(xeglen**2 + yeglen**2)
+        eglen = 0.5 * (xeglen + yeglen)
+        npos = np.empty(9, np.int64)
+        elens = np.empty(9, np.float64)
+        for it in range(1, imax + 1):
+            aidx = np.where(aset == it - 1)[0]
+            if aidx.size == 0:
+                break
+            order = np.argsort(ffun[aidx])
+            for k in range(aidx.size):
+                inod = aidx[order[k]]
+                ipos = 1 + inod // ny
+                jpos = inod - (ipos - 1) * ny + 1
+                npos[0] = inod
+                npos[1] = ipos * ny + (jpos - 1)
+                npos[2] = (ipos - 2) * ny + (jpos - 1)
+                npos[3] = (ipos - 1) * ny + min(jpos + 1, ny) - 1
+                npos[4] = (ipos - 1) * ny + max(jpos - 1, 1) - 1
+                npos[5] = ipos * ny + max(jpos - 1, 1) - 1
+                npos[6] = ipos * ny + min(jpos + 1, ny) - 1
+                npos[7] = (ipos - 2) * ny + min(jpos + 1, ny) - 1
+                npos[8] = (ipos - 2) * ny + max(jpos - 1, 1) - 1
+                j = jpos - 1
+                elens[0] = eglen[j]
+                elens[1] = xeglen[j]
+                elens[2] = xeglen[j]
+                elens[3] = yeglen
+                elens[4] = yeglen
+                elens[5] = dgeglen[j]
+                elens[6] = dgeglen[j]
+                elens[7] = dgeglen[j]
+                elens[8] = dgeglen[j]
+                for ne in range(1, 9):
+                    nod2 = npos[ne]
+                    if nod2 < 0 or nod2 >= n:
+                        continue
+                    nod1 = npos[0]
+                    elen = elens[ne]
+                    if ffun[nod1] > ffun[nod2]:
+                        fun1 = ffun[nod2] + elen * fdfdx[nod2]
+                        if ffun[nod1] > fun1 + ftol:
+                            ffun[nod1] = fun1
+                            aset[nod1] = it
+                    else:
+                        fun2 = ffun[nod1] + elen * fdfdx[nod2]
+                        if ffun[nod2] > fun2 + ftol:
+                            ffun[nod2] = fun2
+                            aset[nod2] = it
+        return ffun
 
-    back = RegularGridInterpolator(
-        (xs, ys), limited, bounds_error=False, fill_value=None
-    )
-    lon, lat = grid.create_grid()
-    return back(
-        np.column_stack([lon.ravel() * c0, lat.ravel()])
-    ).reshape(grid.values.shape)
+    _HAVE_LIMGRAD_STRUCT = True
+except Exception:  # pragma: no cover
+    _HAVE_LIMGRAD_STRUCT = False
+
+
+def _limgrad_struct(grid, gradation_field):
+    """Run limgradStruct on a Grid: xeglen per row = dx*cos(lat)
+    (edgefx.m:306-308 uses h0*cosd(lat) with dy=h0), column-major
+    flattening (rows = y vary fastest), degrees throughout."""
+    lats = grid.create_grid()[1][0, :]
+    xeglen = grid.dx * np.cos(np.deg2rad(np.minimum(np.abs(lats), 85.0)))
+    yeglen = float(grid.dy)
+    ny = grid.values.shape[1]
+    ffun = np.asarray(grid.values, dtype=float).flatten("F").copy()
+    ffun = np.asarray(grid.values, dtype=float).ravel(order="C").copy()
+    # rows must vary fastest: our values are (nx, ny) with y along
+    # axis 1 -> C-order ravel gives y fastest, matching jpos=y
+    fdfdx = np.asarray(gradation_field, dtype=float)
+    if fdfdx.ndim == 0:
+        fdfdx = np.full_like(ffun, float(fdfdx))
+    else:
+        fdfdx = fdfdx.ravel(order="C").astype(float)
+    out = _limgrad_struct_kernel(ny, xeglen.astype(float), yeglen,
+                                 ffun, fdfdx, 10000)
+    return out.reshape(grid.values.shape, order="C")
 
 
 def finalize_sizing(
@@ -285,17 +338,8 @@ def finalize_sizing(
     grad = np.asarray(gradation, dtype=float)
     sz = (*grid.values.shape, 1)
     if grad.ndim == 0:
-        def _run(vals2d, elen):
-            szl = (*vals2d.shape, 1)
-            out = gradient_limit(
-                [*szl], elen, float(grad), 10000,
-                np.asarray(vals2d, dtype=float).flatten("F"),
-            )
-            return np.reshape(out, vals2d.shape, "F")
-
-        cppd = _gradation_cpp_lattice(grid, _run)
-        if cppd is not None:
-            limited = cppd.flatten("F")
+        if _HAVE_LIMGRAD_STRUCT:
+            limited = _limgrad_struct(grid, grad).flatten("F")
         else:
             limited = gradient_limit(
                 [*sz], grid.dx, float(grad), 10000,
