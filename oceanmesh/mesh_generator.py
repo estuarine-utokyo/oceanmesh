@@ -859,12 +859,12 @@ def generate_mesh(domain, edge_length, **kwargs):
 
     pfix, _nfix = _unpack_pfix(_DIM, opts)
 
-    # OM2D meshes in a projected (locally isotropic) plane
-    # (meshgen proj='trans'); meshing raw lon/lat compresses E-W
-    # edges by cos(lat) (Example_1_NZ: EW/NS = 0.743 vs OM2D
-    # 0.967 and a uniform ~17% over-refinement). CPP equivalent:
-    # scale lon by cos(mid-lat) inside the generator only.
-    _cpp = 1.0
+    # OM2D meshes in the m_map projected plane (meshgen proj=
+    # 'trans' = Transverse Mercator centred on the domain, with an
+    # m_ll2xy/m_xy2ll sandwich). Exact equivalent via pyproj tmerc.
+    # Gated off near the equator / for abstract unit domains where
+    # the projection is a no-op anyway.
+    _unproject = None
     if (
         opts.get("cpp", True)
         and not opts["stereo"]
@@ -872,35 +872,69 @@ def generate_mesh(domain, edge_length, **kwargs):
         and abs(bbox[0]).max() <= 360.0
     ):
         _lat0 = 0.5 * (bbox[1][0] + bbox[1][1])
-        _cpp = float(np.cos(np.deg2rad(_lat0)))
-        # only worth activating away from the equator (also keeps
-        # abstract unit-square domains bit-identical)
-        if _cpp <= 0.05 or _cpp > 0.999:
-            _cpp = 1.0
-    if _cpp != 1.0:
-        logger.info(f"CPP frame: lon x {_cpp:.4f} (lat0={_lat0:.2f})")
-        bbox = bbox.copy()
-        bbox[0] = bbox[0] * _cpp
-        if len(pfix):
-            pfix = pfix.copy()
-            pfix[:, 0] *= _cpp
-        _fd_r, _fh_r = fd, fh
+        _c0 = float(np.cos(np.deg2rad(_lat0)))
+        if 0.05 < _c0 <= 0.999:
+            from pyproj import Transformer
 
-        def fd(q, *a, _f=_fd_r, _c=_cpp, **k):
-            q = np.asarray(q, dtype=float).copy()
-            q[:, 0] /= _c
-            return _f(q, *a, **k)
+            _lon0 = 0.5 * (bbox[0][0] + bbox[0][1])
+            _tr = Transformer.from_crs(
+                "EPSG:4326",
+                f"+proj=tmerc +lon_0={_lon0} +lat_0={_lat0} "
+                "+ellps=WGS84 +units=m",
+                always_xy=True,
+            )
+            # degree->metre factor consistent with finalize's
+            # _deg_factor, so fd/fh keep their length scale and
+            # min_edge_length/geps need no rescaling
+            _M = 111e3
 
-        def fh(q, _f=_fh_r, _c=_cpp):
-            q = np.asarray(q, dtype=float).copy()
-            q[:, 0] /= _c
-            return _f(q)
+            def _to_proj(q):
+                x, y = _tr.transform(q[:, 0], q[:, 1])
+                return np.column_stack([x, y]) / _M
 
-        if opts["points"] is not None:
-            opts["points"] = np.asarray(
-                opts["points"], dtype=float
-            ).copy()
-            opts["points"][:, 0] *= _cpp
+            def _from_proj(q):
+                x, y = _tr.transform(
+                    q[:, 0] * _M, q[:, 1] * _M,
+                    direction="INVERSE",
+                )
+                return np.column_stack([x, y])
+
+            _unproject = _from_proj
+            logger.info(
+                "tmerc frame: lon_0=%.4f lat_0=%.2f (m_map "
+                "'Transverse Mercator' analog)", _lon0, _lat0,
+            )
+            _fd_r, _fh_r = fd, fh
+
+            def fd(q, *a, _f=_fd_r, **k):
+                return _f(_from_proj(np.asarray(q, float)), *a, **k)
+
+            def fh(q, _f=_fh_r):
+                return _f(_from_proj(np.asarray(q, float)))
+
+            _corners = np.array(
+                [
+                    [bbox[0][0], bbox[1][0]],
+                    [bbox[0][0], bbox[1][1]],
+                    [bbox[0][1], bbox[1][0]],
+                    [bbox[0][1], bbox[1][1]],
+                    [_lon0, bbox[1][0]],
+                    [_lon0, bbox[1][1]],
+                ]
+            )
+            _pc = _to_proj(_corners)
+            bbox = np.array(
+                [
+                    [_pc[:, 0].min(), _pc[:, 0].max()],
+                    [_pc[:, 1].min(), _pc[:, 1].max()],
+                ]
+            )
+            if len(pfix):
+                pfix = _to_proj(np.asarray(pfix, float))
+            if opts["points"] is not None:
+                opts["points"] = _to_proj(
+                    np.asarray(opts["points"], dtype=float)
+                )
 
     # egfix: (M, 2) indices into pfix. Constrained edges are FORCED
     # into every retriangulation via the CGAL constrained Delaunay
@@ -1060,7 +1094,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                          and (count + 1) % opts["improve_every"] == 0)
         if at_checkpoint and qual_hist[-1][2] > opts["exit_quality"]:
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-            p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix, _unproject)
             logger.info(
                 "Termination: minimum quality %.3f > %.2f",
                 qual_hist[-1][2], opts["exit_quality"],
@@ -1100,7 +1134,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                     # OM2D counterpart)
                     p, t, _ = fix_mesh(p, t, dim=_DIM,
                                        delete_unused=True)
-                    p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
+                    p, t = _maybe_om2d_clean(p, t, opts, pfix, _unproject)
                     logger.info(
                         "Termination: quality plateau after %d "
                         "improvement cycles (mean %.4f, min %.4f) "
@@ -1125,7 +1159,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         # Number of iterations reached, stop.
         if count == (max_iter - 1):
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-            p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix, _unproject)
             logger.info("Termination reached...maximum number of iterations.")
             return p, t
 
@@ -1169,7 +1203,7 @@ def generate_mesh(domain, edge_length, **kwargs):
     p, t = _get_topology(dt)
     t = _remove_triangles_outside(p, t, fd, geps)
     p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-    p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
+    p, t = _maybe_om2d_clean(p, t, opts, pfix, _unproject)
     logger.info("Termination reached...maximum number of iterations.")
     return p, t
 
@@ -1403,19 +1437,18 @@ def _dense(Ix, J, S, shape=None, dtype=None):
 
 
 
-def _maybe_om2d_clean(p, t, opts, pfix, cpp=1.0):
+def _maybe_om2d_clean(p, t, opts, pfix, unproject=None):
     """OM2D meshgen.build parity: msh.clean('default') at every
-    build exit (meshgen.m:1063-1068) unless cleanup='none'; also
-    undoes the CPP lon scaling (clean runs in the isotropic
-    frame, output returns in true lon/lat)."""
+    build exit (meshgen.m:1063-1068) unless cleanup='none'. Like
+    msh.clean's m_proj sandwich, the clean runs in the projected
+    (tmerc) frame and the output is unprojected to lon/lat."""
     if opts.get("cleanup", "default") == "default":
         from .clean import om2d_default_clean
 
         keep = pfix if pfix is not None and len(pfix) else None
         p, t = om2d_default_clean(p, t, pfix=keep)
-    if cpp != 1.0:
-        p = p.copy()
-        p[:, 0] /= cpp
+    if unproject is not None:
+        p = unproject(p)
     return p, t
 
 
