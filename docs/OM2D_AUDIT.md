@@ -99,3 +99,12 @@ of the pip-inpoly incident).
   needed.
 - `test_global_regional_multiscale_australia`: nondeterministic
   pass/fail on identical code (pre-existing flake).
+
+- CORRECTION (2026-07-07): the iteration-loop audit listed a final
+  delaunay_elim(final=1) at build exit; the CURRENT OM2D source has
+  EMPTY `if obj.delaunay_elim_on_exit; end` blocks at both exits
+  (meshgen.m:887-889, 1043-1045) — the call was removed upstream.
+  An attempted port caused 6 test regressions (small-connectivity
+  cull too aggressive on coarse meshes) and was discarded uncommitted.
+  OM2D relies on msh.clean's fixmesh/MMBT to handle the ttol-stale
+  exit topology.
