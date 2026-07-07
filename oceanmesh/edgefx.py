@@ -790,9 +790,12 @@ def feature_sizing_function(
     logger.info("Building a feature sizing function...")
 
     assert r != 0, "r must be nonzero (r<0 = OM2D automatic mode)"
+    # OM2D featfx works on the h0 lattice (CreateStructGrid with
+    # gridspace = h0); the pruning length scales below are tied to
+    # that lattice spacing
     grid_calc = Grid(
         bbox=shoreline.bbox,
-        dx=shoreline.h0 / 2,  # dx is half that of the original shoreline spacing
+        dx=shoreline.h0,
         hmin=shoreline.h0,
         values=0.0,
         extrapolate=True,
@@ -808,58 +811,67 @@ def feature_sizing_function(
     )
     lon, lat = grid_calc.create_grid()
     qpts = np.column_stack((lon.flatten(), lat.flatten()))
-    phi = signed_distance_function.eval(qpts)
-    phi[phi > 0] = 999
-    phi[phi <= 0] = 1.0
-    phi[phi == 999] = 0.0
-    phi = np.reshape(phi, grid_calc.values.shape)
+    h0 = shoreline.h0
 
-    skel = medial_axis(phi, return_distance=False)
+    # signed distance on the lattice (degrees, negative in water)
+    d = signed_distance_function.eval(qpts).reshape(lon.shape)
 
-    indicies_medial_points = skel == 1
-    medial_points_x = lon[indicies_medial_points]
-    medial_points_y = lat[indicies_medial_points]
-    medial_points = np.column_stack((medial_points_x, medial_points_y))
+    # OM2D medial-axis extraction (edgefx.m:291-355): singularities
+    # of the distance gradient well inside the water, NOT a raster
+    # skeleton — skimage medial_axis grows twigs to every coastal
+    # concavity, collapsing W (=> uniformly tiny sizes on the coast)
+    ddx, ddy = np.gradient(d, grid_calc.dx, grid_calc.dy)
+    d_fs = np.sqrt(ddx**2 + ddy**2)
+    medial_mask = (d_fs < 0.90) & (d < -0.5 * h0)
 
-    phi2 = np.ones(shape=(grid_calc.nx, grid_calc.ny))
-    points = np.vstack((shoreline.inner, shoreline.mainland))
-    # find location of points on grid
-    indices = grid_calc.find_indices(points, lon, lat)
-    phi2[indices] = -1.0
-    dis = np.abs(skfmm.distance(phi2, [grid_calc.dx, grid_calc.dy]))
+    # narrow-channel fix (edgefx.m:313-327): water cell whose N/S or
+    # E/W neighbours are both land
+    interior = d[1:-1, 1:-1] < 0
+    ns_land = (d[:-2, 1:-1] >= 0) & (d[2:, 1:-1] >= 0)
+    ew_land = (d[1:-1, :-2] >= 0) & (d[1:-1, 2:] >= 0)
+    channel = np.zeros_like(medial_mask)
+    channel[1:-1, 1:-1] = interior & (ns_land | ew_land)
+    medial_mask |= channel
 
-    if plot:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 4))
-        ax1.pcolor(lon, lat, skel, cmap=plt.cm.gray)
-        ax1.axis("off")
-        ax2.pcolor(lon, lat, skel)
-        ax2.contour(lon, lat, phi, [0.5], colors="w")
-        ax2.axis("off")
+    medial_points = np.column_stack(
+        (lon[medial_mask], lat[medial_mask])
+    )
 
-        fig.subplots_adjust(hspace=0.01, wspace=0.01, top=1, bottom=0, left=0, right=1)
-        plt.show()
+    # continuity prune (edgefx.m:345-355): require ~a line of medial
+    # points — 2nd/3rd/4th neighbours within co, 2co, 3co * h0
+    co = 2.0 * np.sqrt(2.0)
+    if len(medial_points) > 12:
+        mtree = scipy.spatial.cKDTree(medial_points)
+        dmed, _ = mtree.query(medial_points, k=4, workers=-1)
+        prune = (
+            (dmed[:, 1] > co * h0)
+            | (dmed[:, 2] > 2 * co * h0)
+            | (dmed[:, 3] > 3 * co * h0)
+        )
+        medial_points = medial_points[~prune]
 
-    # calculate distance to medial axis
-    tree = scipy.spatial.cKDTree(medial_points)
-    try:
-        dMA, _ = tree.query(qpts, k=1, workers=-1)
-    except (Exception,):
-        dMA, _ = tree.query(qpts, k=1, n_jobs=-1)
-    dMA = dMA.reshape(*dis.shape)
-    W = dMA + np.abs(dis)
-    if r < 0:
-        # OM2D automatic mode (fs < 0): cap the element count per
-        # feature at -r, but never demand more elements than the
-        # feature supports at h0: r_eff = min(-r, ceil(W / h0)).
-        r_eff = np.minimum(float(-r), np.ceil(W / shoreline.h0))
-        r_eff = np.maximum(r_eff, 1.0)
-        feature_size = (2 * W) / r_eff
+    if len(medial_points) <= 12:
+        # OM2D fallback: no reliable medial axis -> distance grading
+        logger.warning(
+            "No medial points, resorting to distance function"
+        )
+        grid_calc.values = h0 + 0.15 * np.abs(d)
     else:
-        feature_size = (2 * W) / r
+        tree = scipy.spatial.cKDTree(medial_points)
+        dMA, _ = tree.query(qpts, k=1, workers=-1)
+        dMA = dMA.reshape(lon.shape)
+        W = dMA + np.abs(d)
+        if r < 0:
+            # OM2D automatic mode (fs < 0): cap the element count
+            # per feature at -r, but never demand more elements
+            # than the feature supports at h0.
+            r_eff = np.minimum(float(-r), np.ceil(W / h0))
+            r_eff = np.maximum(r_eff, 1.0)
+            grid_calc.values = (2 * W) / r_eff
+        else:
+            grid_calc.values = (2 * W) / r
 
-    grid_calc.values = feature_size
     grid_calc.build_interpolant()
-    # interpolate the finer grid used for calculations to the final coarser grid
     grid = grid_calc.interpolate_to(grid)
     if min_edge_length is not None:
         grid.values[grid.values < min_edge_length] = min_edge_length

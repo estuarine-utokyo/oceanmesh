@@ -63,18 +63,29 @@ def collapse_thin_triangles(points, cells, min_qual=0.10):
         evec = p[ee[:, 0]] - p[ee[:, 1]]
         meid = int(np.argmin((evec**2).sum(1)))
         rm, keep = int(ee[meid, 0]), int(ee[meid, 1])
-        t_old = t.copy()
         t = np.delete(t, tid, axis=0)
+        qm = np.delete(qm, tid)
         t[t == rm] = keep
+        # the (up to two) neighbours of the collapsed edge become
+        # index-degenerate: REMOVE them (OM2D semantics) instead of
+        # reverting — reverting made the whole routine a no-op
         degen = ((t[:, 0] == t[:, 1]) | (t[:, 1] == t[:, 2])
                  | (t[:, 0] == t[:, 2]))
         if degen.any():
-            t = t_old
-            qm[tid] = 1.0  # cannot collapse; mark as fine
-            continue
-        qm = np.delete(qm, tid)
+            t = t[~degen]
+            qm = qm[~degen]
+        # collapsing can fold two faces onto the same vertex
+        # triple: drop duplicates (and their stale qualities)
+        _, first = np.unique(np.sort(t, axis=1), axis=0,
+                             return_index=True)
+        if len(first) != len(t):
+            keep_rows = np.zeros(len(t), dtype=bool)
+            keep_rows[first] = True
+            t = t[keep_rows]
+            qm = qm[keep_rows]
         touched = ((t == keep).any(axis=1))
-        qm[touched] = area_length_quality(p, t[touched])
+        if touched.any():
+            qm[touched] = area_length_quality(p, t[touched])
         kount += 1
     p, t, _ = fix_mesh(p, t, delete_unused=True)
     logger.info(f"Removed {kount} thin triangles")
@@ -137,6 +148,10 @@ def direct_smoother_lur(points, cells, pfix=None):
 
     c = sp.linalg.spsolve(K.tocsr(), F)
     out = c.reshape(-1, 2)
+    # penalty pinning is approximate (~1/kinf residual); pinned
+    # vertices are FIXED by contract — snap them back exactly
+    fixed_idx = np.fromiter(fixed, dtype=int)
+    out[fixed_idx] = p[fixed_idx]
     out = out * scale + shift
     return out, np.asarray(cells, dtype=int)
 

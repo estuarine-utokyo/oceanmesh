@@ -308,6 +308,7 @@ def _parse_kwargs(kwargs):
             "exit_quality",
             "max_stalls",
         "cleanup",
+        "cpp",
             "heal_fixed_edges_every",
             "rewind_threshold",
         }:
@@ -822,6 +823,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         "exit_quality": 0.30,      # OM2D EXIT_QUALITY termination
         "max_stalls": 3,
         "cleanup": "default",           # plateau cutoff (user policy)
+        "cpp": True,               # OM2D proj parity: mesh in CPP-scaled frame
         "heal_fixed_edges_every": 2,  # OM2D delIT cadence
         "rewind_threshold": 0.10,  # abort improvement on >10% loss
     }
@@ -847,6 +849,50 @@ def generate_mesh(domain, edge_length, **kwargs):
     deps = np.sqrt(np.finfo(np.double).eps)  # * np.amin(min_edge_length)
 
     pfix, _nfix = _unpack_pfix(_DIM, opts)
+
+    # OM2D meshes in a projected (locally isotropic) plane
+    # (meshgen proj='trans'); meshing raw lon/lat compresses E-W
+    # edges by cos(lat) (Example_1_NZ: EW/NS = 0.743 vs OM2D
+    # 0.967 and a uniform ~17% over-refinement). CPP equivalent:
+    # scale lon by cos(mid-lat) inside the generator only.
+    _cpp = 1.0
+    if (
+        opts.get("cpp", True)
+        and not opts["stereo"]
+        and abs(bbox[1]).max() <= 90.0
+        and abs(bbox[0]).max() <= 360.0
+    ):
+        _lat0 = 0.5 * (bbox[1][0] + bbox[1][1])
+        _cpp = float(np.cos(np.deg2rad(_lat0)))
+        # only worth activating away from the equator (also keeps
+        # abstract unit-square domains bit-identical)
+        if _cpp <= 0.05 or _cpp > 0.999:
+            _cpp = 1.0
+    if _cpp != 1.0:
+        logger.info(f"CPP frame: lon x {_cpp:.4f} (lat0={_lat0:.2f})")
+        bbox = bbox.copy()
+        bbox[0] = bbox[0] * _cpp
+        if len(pfix):
+            pfix = pfix.copy()
+            pfix[:, 0] *= _cpp
+        _fd_r, _fh_r = fd, fh
+
+        def fd(q, *a, _f=_fd_r, _c=_cpp, **k):
+            q = np.asarray(q, dtype=float).copy()
+            q[:, 0] /= _c
+            return _f(q, *a, **k)
+
+        def fh(q, _f=_fh_r, _c=_cpp):
+            q = np.asarray(q, dtype=float).copy()
+            q[:, 0] /= _c
+            return _f(q)
+
+        if opts["points"] is not None:
+            opts["points"] = np.asarray(
+                opts["points"], dtype=float
+            ).copy()
+            opts["points"][:, 0] *= _cpp
+
     # egfix: (M, 2) indices into pfix. Constrained edges are FORCED
     # into every retriangulation via the CGAL constrained Delaunay
     # binding — the OceanMesh2D high-fidelity capability (MATLAB
@@ -958,7 +1004,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                          and (count + 1) % opts["improve_every"] == 0)
         if at_checkpoint and qual_hist[-1][2] > opts["exit_quality"]:
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-            p, t = _maybe_om2d_clean(p, t, opts, pfix)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
             logger.info(
                 "Termination: minimum quality %.3f > %.2f",
                 qual_hist[-1][2], opts["exit_quality"],
@@ -979,7 +1025,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                     # quality is stage-2/manual-editing territory)
                     p, t, _ = fix_mesh(p, t, dim=_DIM,
                                        delete_unused=True)
-                    p, t = _maybe_om2d_clean(p, t, opts, pfix)
+                    p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
                     logger.info(
                         "Termination: quality plateau after %d "
                         "improvement cycles (mean %.4f, min %.4f) "
@@ -1000,7 +1046,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         # Number of iterations reached, stop.
         if count == (max_iter - 1):
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-            p, t = _maybe_om2d_clean(p, t, opts, pfix)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
             logger.info("Termination reached...maximum number of iterations.")
             return p, t
 
@@ -1044,7 +1090,7 @@ def generate_mesh(domain, edge_length, **kwargs):
     p, t = _get_topology(dt)
     t = _remove_triangles_outside(p, t, fd, geps)
     p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
-    p, t = _maybe_om2d_clean(p, t, opts, pfix)
+    p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
     logger.info("Termination reached...maximum number of iterations.")
     return p, t
 
@@ -1275,15 +1321,20 @@ def _dense(Ix, J, S, shape=None, dtype=None):
 
 
 
-def _maybe_om2d_clean(p, t, opts, pfix):
+def _maybe_om2d_clean(p, t, opts, pfix, cpp=1.0):
     """OM2D meshgen.build parity: msh.clean('default') at every
-    build exit (meshgen.m:1063-1068) unless cleanup='none'."""
-    if opts.get("cleanup", "default") != "default":
-        return p, t
-    from .clean import om2d_default_clean
+    build exit (meshgen.m:1063-1068) unless cleanup='none'; also
+    undoes the CPP lon scaling (clean runs in the isotropic
+    frame, output returns in true lon/lat)."""
+    if opts.get("cleanup", "default") == "default":
+        from .clean import om2d_default_clean
 
-    keep = pfix if pfix is not None and len(pfix) else None
-    return om2d_default_clean(p, t, pfix=keep)
+        keep = pfix if pfix is not None and len(pfix) else None
+        p, t = om2d_default_clean(p, t, pfix=keep)
+    if cpp != 1.0:
+        p = p.copy()
+        p[:, 0] /= cpp
+    return p, t
 
 
 def _remove_triangles_outside(p, t, fd, geps):
@@ -1340,9 +1391,36 @@ def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=F
     """Create initial distribution in bounding box (equilateral triangles)"""
     if stereo:
         bbox = np.array([[-180, 180], [-89, 89]])
-    p = np.mgrid[
-        tuple(slice(min, max + min_edge_length, min_edge_length) for min, max in bbox)
-    ].astype(float)
+    if stereo:
+        p = np.mgrid[
+            tuple(
+                slice(min, max + min_edge_length, min_edge_length)
+                for min, max in bbox
+            )
+        ].astype(float)
+    else:
+        # OM2D equilateral seeding (meshgen.m:680-712): rows at
+        # min_edge spacing, columns at 2/sqrt(3)*min_edge, odd rows
+        # offset by half a column — 13% fewer seeds than a square
+        # lattice and the classic DistMesh starting layout
+        dxs = 2.0 / np.sqrt(3.0) * min_edge_length
+        ys = np.arange(
+            bbox[1][0], bbox[1][1] + min_edge_length, min_edge_length
+        )
+        rows = []
+        for i, y in enumerate(ys):
+            x0 = bbox[0][0] + (0.5 * dxs if i % 2 else 0.0)
+            xs = np.arange(x0, bbox[0][1] + dxs, dxs)
+            if i % 2:
+                # keep the frame straight on offset rows, else the
+                # ragged rim gets shaved by the boundary clean
+                xs = np.concatenate(
+                    ([bbox[0][0]], xs, [bbox[0][1]])
+                )
+            rows.append(
+                np.column_stack([xs, np.full(len(xs), y)])
+            )
+        p = np.vstack(rows)
     if stereo:
         # For global meshes (including mixed global+regional) we generate points in lat/lon,
         # then project to stereo. The sizing function fh has already been wrapped (if needed)
@@ -1355,7 +1433,6 @@ def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=F
         p = np.asarray([x, y]).T
         r0 = fh(to_lat_lon(p[:, 0], p[:, 1])) * _stereo_distortion(p0[:, 1])
     else:
-        p = p.reshape(2, -1).T
         r0 = fh(p)
     r0m = np.min(r0[r0 >= min_edge_length])
     p = p[np.random.rand(p.shape[0]) < r0m**2 / r0**2]

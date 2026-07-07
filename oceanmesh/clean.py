@@ -98,10 +98,18 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
         _, idx = cKDTree(vertices).query(pfix)
         return np.unique(idx)
 
+    v_in, f_in = vertices, faces
+
     for _ in range(max_passes):
         n_faces_in = len(faces)
         # 1. boundary-element quality loop (msh.m:1166-1184)
         for _i in range(25):
+            if len(faces) == 0:
+                logger.warning(
+                    "om2d_default_clean: boundary deletion emptied "
+                    "the mesh; returning the uncleaned input"
+                )
+                return v_in, f_in
             _, boundary_vertices = _external_topology(vertices, faces)
             touching = np.isin(faces, boundary_vertices).any(axis=1)
             q = simp_qual(vertices, faces)
@@ -114,23 +122,53 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             faces = faces[~bad]
             vertices, faces, _ = fix_mesh(vertices, faces,
                                           delete_unused=True)
+        if len(faces) == 0:
+            logger.warning(
+                "om2d_default_clean: clean deleted the whole mesh; "
+                "returning the uncleaned input"
+            )
+            return v_in, f_in
         # 2. sliver collapse at the same threshold (msh.m:1186-1187)
         if pfix is None:
             vertices, faces = collapse_thin_triangles(
                 vertices, faces, min_qual=min_qual_bound
             )
+        if len(faces) == 0:
+            logger.warning(
+                "om2d_default_clean: collapse deleted the whole "
+                "mesh; returning the uncleaned input"
+            )
+            return v_in, f_in
         # 3. boundary traversability (msh.m:1191)
         vertices, faces = make_mesh_boundaries_traversable(
             vertices, faces, min_disconnected_area=dj_cutoff
         )
+        if len(faces) == 0:
+            return v_in, f_in
         # 4. smoothing with boundary + pfix pinned (msh.m:1212-1221)
-        # laplacian2 pins all boundary vertices internally and takes
-        # pfix as COORDINATES
+        # OM2D ds semantics (msh.m:1133-1139): direct FEM solve when
+        # pfix is present (ds=1), else the iterative smoother (ds=2)
         if smooth:
-            vertices, faces = laplacian2(vertices, faces, pfix=pfix)
+            if pfix is not None:
+                from .mesh_improve import direct_smoother_lur
+
+                vertices, faces = direct_smoother_lur(
+                    vertices, faces, pfix=pfix
+                )
+            else:
+                vertices, faces = laplacian2(vertices, faces)
         q = simp_qual(vertices, faces)
         if q.min() >= min_qual_bound or len(faces) == n_faces_in:
             break
+    # final shot: interior cap slivers that survive the loop respond
+    # to the implicit FEM smoother (OM2D recursive-clean endgame)
+    q = simp_qual(vertices, faces)
+    if smooth and q.min() < min_qual_bound:
+        from .mesh_improve import direct_smoother_lur
+
+        v2, f2 = direct_smoother_lur(vertices, faces, pfix=pfix)
+        if simp_qual(v2, f2).min() > q.min():
+            vertices, faces = v2, f2
     return vertices, faces
 
 
@@ -286,7 +324,9 @@ def make_mesh_boundaries_traversable(vertices, faces, min_disconnected_area=0.05
 def _external_topology(vertices, faces):
     """Get edges and vertices that make up the boundary of the mesh"""
     boundary_edges = edges.get_boundary_edges(faces)
-    boundary_vertices = vertices[np.unique(boundary_edges.reshape(-1))]
+    boundary_vertices = vertices[
+        np.unique(boundary_edges.reshape(-1)).astype(int)
+    ]
     return boundary_edges, boundary_vertices
 
 

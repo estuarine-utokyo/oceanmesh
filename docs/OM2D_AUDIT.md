@@ -88,3 +88,14 @@ Futtsu, Kannonzaki, Tokyo/Yokohama ports, bay mouth). Then P1 7-12 in
 that order; P2 opportunistically. Every geometry-touching change must
 pass a real-multi-ring equivalence/referee test before merging (lesson
 of the pip-inpoly incident).
+
+
+## Known issues (parked)
+
+- `bossen_heckbert` force function (upstream extra, unused by any
+  OM2D example): its point cloud collapses to a handful of vertices
+  under the in-loop improvement cycle regardless of seeding lattice;
+  test marked xfail. Investigate when/if that force function is ever
+  needed.
+- `test_global_regional_multiscale_australia`: nondeterministic
+  pass/fail on identical code (pre-existing flake).
