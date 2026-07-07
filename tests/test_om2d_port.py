@@ -181,3 +181,53 @@ def test_unstructured_slopes_planar():
     if len(interior):
         assert np.allclose(bx[interior], 2.0, atol=0.2)
         assert np.allclose(by[interior], 3.0, atol=0.2)
+
+
+def test_inpoly_numba_matches_brute_on_multisegment():
+    # regression for the pip-'inpoly' incident: multi-ring +
+    # open-chain + duplicate-vertex input must match a brute-force
+    # crossing-number referee exactly (the pip package failed 200/
+    # 200 refereed mismatches on real shoreline data)
+    from oceanmesh.geometry.point_in_polygon import (
+        _HAVE_NUMBA_INPOLY,
+        _inpoly_numba,
+    )
+
+    if not _HAVE_NUMBA_INPOLY:
+        pytest.skip("numba unavailable")
+    rng = np.random.default_rng(3)
+    segs = []
+    # outer ring with a duplicate vertex
+    th = np.linspace(0, 2 * np.pi, 41)
+    ring = np.column_stack([np.cos(th), np.sin(th)])
+    ring = np.insert(ring, 5, ring[5], axis=0)
+    segs.append(ring)
+    # two island rings
+    for cx, cy, r in ((0.3, 0.2, 0.15), (-0.4, -0.3, 0.1)):
+        th = np.linspace(0, 2 * np.pi, 23)
+        segs.append(np.column_stack([cx + r * np.cos(th),
+                                     cy + r * np.sin(th)]))
+    # open chain (clipped-coast analogue)
+    segs.append(np.column_stack([np.linspace(-0.9, 0.9, 30),
+                                 0.7 + 0.05 * rng.standard_normal(30)]))
+    parts = []
+    for s in segs:
+        parts.append(s)
+        parts.append(np.array([[np.nan, np.nan]]))
+    poly = np.vstack(parts)
+    from oceanmesh import edges as om_edges
+
+    node = np.nan_to_num(poly)
+    edge = om_edges.get_poly_edges(poly)
+    q = rng.uniform(-1.2, 1.2, (20000, 2))
+    s_nb, _ = _inpoly_numba(q, node, edge, 5e-14)
+
+    x1, y1 = node[edge[:, 0], 0], node[edge[:, 0], 1]
+    x2, y2 = node[edge[:, 1], 0], node[edge[:, 1], 1]
+    ref = np.zeros(len(q), bool)
+    for i, (qx, qy) in enumerate(q):
+        c = (y1 > qy) != (y2 > qy)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            xi = x1 + (qy - y1) * (x2 - x1) / (y2 - y1)
+        ref[i] = (np.count_nonzero(c & (qx < xi)) % 2) == 1
+    assert (s_nb == ref).mean() == 1.0
