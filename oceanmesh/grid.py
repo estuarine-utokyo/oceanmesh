@@ -502,10 +502,6 @@ class Grid(Region):
 
         """
         lon1, lat1 = self.create_vectors()
-        if self.extrapolate:
-            _FILL = None
-        else:
-            _FILL = 999999
 
         # for global mesh make it cyclical (from MatLab)
         if (abs(self.bbox[0]) == 180) & (abs(self.bbox[1]) == 180):
@@ -516,11 +512,31 @@ class Grid(Region):
             self.values,
             method="linear",
             bounds_error=False,
-            fill_value=_FILL,
+            fill_value=None if self.extrapolate else 999999,
         )
 
-        def sizing_function(x):
-            return fp(x)
+        if self.extrapolate:
+            # OM2D edgefx interpolant is griddedInterpolant(...,
+            # 'linear','nearest') (edgefx.m:1014): outside the grid
+            # the EDGE VALUE is held constant. Linear extrapolation
+            # instead undershoots wherever the field ramps near the
+            # frame — observed as spurious refinement toward the
+            # three open-ocean corners of Example_1_NZ (the tmerc
+            # frame queries corner points beyond the lon/lat grid).
+            x0, x1 = float(lon1[0]), float(lon1[-1])
+            y0, y1 = float(lat1[0]), float(lat1[-1])
+
+            def sizing_function(x):
+                x = np.asarray(x, dtype=float)
+                q = np.column_stack(
+                    (np.clip(x[:, 0], x0, x1),
+                     np.clip(x[:, 1], y0, y1))
+                )
+                return fp(q)
+        else:
+
+            def sizing_function(x):
+                return fp(x)
 
         self.eval = sizing_function
         return self
