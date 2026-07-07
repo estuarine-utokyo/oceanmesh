@@ -161,6 +161,42 @@ def enforce_nearshore_max_edge(grid, shoreline, max_edge_length_ns,
     return grid
 
 
+def _gradation_cpp_lattice(grid, run_limit):
+    """Run the (isotropic) HJ gradient limiter on a CPP-scaled
+    lattice so the enforced size gradient is physically isotropic.
+
+    On a raw lon/lat lattice the x-step is physically dx*cos(lat),
+    so a scalar-elen limiter allows d(h)/ds ~ g/cos(lat) along x
+    (OM2D limgradStruct uses dx=h0*cos(lat) in its stencil,
+    edgefx.m:895-921). At |lat|~44 that is ~40% too permissive and
+    the sizing field came out ~12% coarser than OM2D's dump.
+    run_limit(values2d, elen) -> limited 2d values on the lattice.
+    """
+    lat0 = 0.5 * (grid.bbox[2] + grid.bbox[3])
+    c0 = float(np.cos(np.deg2rad(lat0)))
+    if c0 > 0.999 or c0 <= 0.05 or abs(lat0) > 90.0:
+        return None
+    x0, x1, y0, y1 = grid.bbox
+    dy = grid.dy
+    xs = np.arange(x0 * c0, x1 * c0 + dy, dy)
+    ys = np.arange(y0, y1 + dy, dy)
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    grid.build_interpolant()
+    vals = grid.eval(
+        np.column_stack([X.ravel() / c0, Y.ravel()])
+    ).reshape(X.shape)
+    limited = run_limit(vals, dy)
+    from scipy.interpolate import RegularGridInterpolator
+
+    back = RegularGridInterpolator(
+        (xs, ys), limited, bounds_error=False, fill_value=None
+    )
+    lon, lat = grid.create_grid()
+    return back(
+        np.column_stack([lon.ravel() * c0, lat.ravel()])
+    ).reshape(grid.values.shape)
+
+
 def finalize_sizing(
     edge_lengths,
     dem=None,
@@ -249,10 +285,22 @@ def finalize_sizing(
     grad = np.asarray(gradation, dtype=float)
     sz = (*grid.values.shape, 1)
     if grad.ndim == 0:
-        limited = gradient_limit(
-            [*sz], grid.dx, float(grad), 10000,
-            np.asarray(grid.values, dtype=float).flatten("F"),
-        )
+        def _run(vals2d, elen):
+            szl = (*vals2d.shape, 1)
+            out = gradient_limit(
+                [*szl], elen, float(grad), 10000,
+                np.asarray(vals2d, dtype=float).flatten("F"),
+            )
+            return np.reshape(out, vals2d.shape, "F")
+
+        cppd = _gradation_cpp_lattice(grid, _run)
+        if cppd is not None:
+            limited = cppd.flatten("F")
+        else:
+            limited = gradient_limit(
+                [*sz], grid.dx, float(grad), 10000,
+                np.asarray(grid.values, dtype=float).flatten("F"),
+            )
     else:
         if dem is None:
             raise ValueError("banded gradation needs dem")

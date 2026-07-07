@@ -145,6 +145,18 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
         )
         if len(faces) == 0:
             return v_in, f_in
+        # 3.5 valence bound (msh.m:1203-1209): OM2D default clean
+        # runs bound_con_int(9); cap-sliver clusters sit around
+        # high-valence nodes and respond to these edge flips
+        try:
+            from .mesh_improve import bound_connectivity
+
+            vertices, faces = bound_connectivity(
+                vertices, faces, max_valence=9, pfix=pfix
+            )
+        except Exception:
+            logger.warning("bound_connectivity failed; skipping")
+
         # 4. smoothing with boundary + pfix pinned (msh.m:1212-1221)
         # OM2D ds semantics (msh.m:1133-1139): direct FEM solve when
         # pfix is present (ds=1), else the iterative smoother (ds=2)
