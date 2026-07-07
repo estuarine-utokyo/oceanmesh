@@ -96,15 +96,25 @@ def interp_bathymetry(
         xs = xa[::sx]
         ys = ya[::sy]
 
-        def _win(vec, lo, hi):
-            i0 = np.searchsorted(vec, np.minimum(lo, hi)) - 1
-            i1 = np.searchsorted(vec, np.maximum(lo, hi))
+        def _win(vec, lo, hi, centre):
+            # GridData.m:352-364: nearest indices, then shrink so
+            # only cell centres INSIDE [lo, hi] remain; degenerate
+            # windows collapse to the node's own cell (:366-369)
+            lo_, hi_ = np.minimum(lo, hi), np.maximum(lo, hi)
+            i0 = np.searchsorted(vec, lo_, side="left")
+            i1 = np.searchsorted(vec, hi_, side="right")
+            ic = np.clip(
+                np.searchsorted(vec, centre) , 0, len(vec) - 1
+            )
+            bad = i1 <= i0
+            i0[bad] = ic[bad]
+            i1[bad] = ic[bad] + 1
             i0 = np.clip(i0, 0, len(vec) - 1)
             i1 = np.clip(i1, i0 + 1, len(vec))
             return i0, i1
 
-        ix0, ix1 = _win(xs, pcon_min[:, 0], pcon_max[:, 0])
-        iy0, iy1 = _win(ys, pcon_min[:, 1], pcon_max[:, 1])
+        ix0, ix1 = _win(xs, pcon_min[:, 0], pcon_max[:, 0], p[:, 0])
+        iy0, iy1 = _win(ys, pcon_min[:, 1], pcon_max[:, 1], p[:, 1])
 
         zs = zd[::sx, ::sy]
         valid = np.isfinite(zs)
