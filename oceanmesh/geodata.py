@@ -1327,7 +1327,15 @@ class Shoreline(Region):
         a shoreline to dst_crs
         """
         dst_crs = CRS.from_user_input(dst_crs)
-        if not gdf.crs.equals(dst_crs):
+        if gdf.crs is None:
+            # no .prj sidecar (e.g. OM2D's PostSandyNCEI shapefile):
+            # assume the data is already in dst_crs, as OM2D's
+            # CRS-agnostic reader effectively does
+            logger.warning(
+                f"Shapefile has no CRS; assuming {dst_crs.srs}"
+            )
+            gdf = gdf.set_crs(dst_crs)
+        elif not gdf.crs.equals(dst_crs):
             logger.info(f"Reprojecting shoreline from {gdf.crs} to {dst_crs}")
             gdf = gdf.to_crs(dst_crs)
         return gdf
