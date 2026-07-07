@@ -805,7 +805,7 @@ def generate_mesh(domain, edge_length, **kwargs):
     """
     _DIM = 2
     opts = {
-        "max_iter": 50,
+        "max_iter": 100,           # OM2D itmax (meshgen.m:421)
         "seed": 0,
         "pfix": None,
         "egfix": None,
@@ -813,18 +813,22 @@ def generate_mesh(domain, edge_length, **kwargs):
         "min_edge_length": None,
         "plot": 999999,
         "lock_boundary": False,
-        "pseudo_dt": 0.2,
+        "pseudo_dt": 0.1,          # OM2D deltat (meshgen.m:654)
         "stereo": False,
-        # OM2D meshgen.build parity (port plan P1):
-        "force_function": "persson_strang",  # or "bossen_heckbert"
+        # OM2D meshgen.build parity:
+        # the .m force law IS Bossen-Heckbert (meshgen.m:1003)
+        "force_function": "bossen_heckbert",
         "improve": True,           # in-loop add/delete improvement
         "improve_every": 10,       # OM2D imp cadence
         "qual_tol": 0.01,          # OM2D qual_tol stagnation gate
         "exit_quality": 0.30,      # OM2D EXIT_QUALITY termination
-        "max_stalls": 3,
-        "cleanup": "default",           # plateau cutoff (user policy)
-        "cpp": True,               # OM2D proj parity: mesh in CPP-scaled frame
-        "heal_fixed_edges_every": 2,  # OM2D delIT cadence
+        # plateau cutoff is an OWNER-REQUESTED option with no OM2D
+        # counterpart; disabled by default for parity (OM2D only
+        # exits on quality>0.30 or itmax)
+        "max_stalls": None,
+        "cleanup": "default",
+        "cpp": True,               # OM2D proj parity (m_map 'trans' analog)
+        "heal_fixed_edges_every": 2,  # OM2D delImp cadence
         "rewind_threshold": 0.10,  # abort improvement on >10% loss
     }
     opts.update(kwargs)
@@ -844,6 +848,9 @@ def generate_mesh(domain, edge_length, **kwargs):
     np.random.seed(opts["seed"])
 
     L0mult = 1 + 0.4 / 2 ** (_DIM - 1)
+    if opts["pfix"] is not None and len(opts["pfix"]) > 0:
+        # meshgen.m:762-763: Fscale = 1.1 when fixed points exist
+        L0mult = 1.1
     delta_t = opts["pseudo_dt"]
     geps = 1e-3 * np.amin(min_edge_length)
     deps = np.sqrt(np.finfo(np.double).eps)  # * np.amin(min_edge_length)
@@ -1017,7 +1024,8 @@ def generate_mesh(domain, edge_length, **kwargs):
             if abs(qual_hist[-1][0] - prev) < (
                     opts["improve_every"] * opts["qual_tol"]):
                 stall_count += 1
-                if stall_count >= int(opts.get("max_stalls", 3)):
+                _ms = opts.get("max_stalls")
+                if _ms is not None and stall_count >= int(_ms):
                     # convergence limit: mean quality has not moved
                     # across max_stalls consecutive improvement
                     # cycles — further iterations are wasted (the
@@ -1252,18 +1260,21 @@ def _compute_forces(p, t, fh, min_edge_length, L0mult, opts):
         repl = np.nanmedian(hbars[valid])
         hbars = np.where(valid, hbars, repl)
     L0 = hbars * L0mult * (np.nanmedian(L) / np.nanmedian(hbars))
-    if opts.get("force_function", "persson_strang") == "bossen_heckbert":
-        # OM2D meshgen.build default: attractive/repulsive
-        # Bossen-Heckbert force F = (1-LN^4) * exp(-LN^4) / LN
+    if opts.get("force_function", "bossen_heckbert") == "bossen_heckbert":
+        # meshgen.m:1001-1005 verbatim: LN = L./L0;
+        # F = (1-LN.^4).*exp(-LN.^4)./LN; F(isinf(F))=0;
+        # Fvec = F*[1,1].*barvec  (barvec RAW, not normalized)
         LN = L / L0
-        F = (1.0 - LN**4) * np.exp(-(LN**4)) / LN
-        F = F * L0  # scale to bar-length units like Persson-Strang
+        with np.errstate(divide="ignore", invalid="ignore"):
+            F = (1.0 - LN**4) * np.exp(-(LN**4)) / LN
+        F[~np.isfinite(F)] = 0.0
+        Fvec = F[:, None] * barvec
     else:
         F = L0 - L
         F[F < 0] = 0  # Bar forces (scalars)
-    Fvec = (
-        F[:, None] / L[:, None].dot(np.ones((1, 2))) * barvec
-    )  # Bar forces (x,y components)
+        Fvec = (
+            F[:, None] / L[:, None].dot(np.ones((1, 2))) * barvec
+        )  # Bar forces (x,y components)
     Ftot = _dense(
         bars[:, [0] * 2 + [1] * 2],
         np.repeat([list(range(2)) * 2], len(F), axis=0),
