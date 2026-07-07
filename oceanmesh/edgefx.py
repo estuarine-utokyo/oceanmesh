@@ -813,14 +813,45 @@ def feature_sizing_function(
     qpts = np.column_stack((lon.flatten(), lat.flatten()))
     h0 = shoreline.h0
 
-    # signed distance on the lattice (degrees, negative in water)
-    d = signed_distance_function.eval(qpts).reshape(lon.shape)
+    # feature distance per the edgefx dpoly (@edgefx/private/
+    # dpoly.m): magnitude = distance to LAND ONLY (pv = [mainland;
+    # inner] — the domain frame is NOT a feature), sign from the
+    # domain parity. Using the frame-inclusive SDF distance planted
+    # spurious medial points along the domain-corner bisectors
+    # (fh 1 km at open-ocean corners vs OM2D's 100 km).
+    land_pts = [
+        np.asarray(a)
+        for a in (shoreline.mainland, shoreline.inner)
+        if a is not None and len(a)
+    ]
+    if land_pts:
+        land = np.vstack(land_pts)
+        land = land[~np.isnan(land[:, 0])]
+        ltree = scipy.spatial.cKDTree(land)
+        dist_land, _ = ltree.query(qpts, k=1, workers=-1)
+        sgn = np.where(
+            signed_distance_function.eval(qpts) < 0, -1.0, 1.0
+        )
+        d = (sgn * dist_land).reshape(lon.shape)
+    else:
+        d = signed_distance_function.eval(qpts).reshape(lon.shape)
 
     # OM2D medial-axis extraction (edgefx.m:291-355): singularities
     # of the distance gradient well inside the water, NOT a raster
     # skeleton — skimage medial_axis grows twigs to every coastal
     # concavity, collapsing W (=> uniformly tiny sizes on the coast)
-    ddx, ddy = np.gradient(d, grid_calc.dx, grid_calc.dy)
+    # Gradient spacing per the .m (edgefx.m:306-308):
+    # dx = h0*cosd(lat) per row, dy = h0. Differentiating with the
+    # isotropic degree spacing instead depressed |grad d| along the
+    # domain-corner bisectors, planting SPURIOUS medial points
+    # there (fh 1 km at the open-ocean corners vs OM2D's 100 km —
+    # user-spotted corner refinement).
+    xeglen = grid_calc.dx * np.cos(
+        np.deg2rad(np.minimum(np.abs(lat[0, :]), 85.0))
+    )
+    ddy, ddx = np.gradient(d, axis=(1, 0))
+    ddy = ddy / grid_calc.dy
+    ddx = ddx / xeglen[None, :]
     d_fs = np.sqrt(ddx**2 + ddy**2)
     medial_mask = (d_fs < 0.90) & (d < -0.5 * h0)
 
