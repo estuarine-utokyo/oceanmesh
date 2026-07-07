@@ -103,6 +103,14 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
     for _ in range(max_passes):
         n_faces_in = len(faces)
         # 1. boundary-element quality loop (msh.m:1166-1184)
+        # EROSION GUARD: repeated boundary deletion can cascade
+        # (delete ring -> expose new boundary -> delete again) and
+        # amputate whole offshore regions (Fiordland fan incident:
+        # 56% of a healthy region eaten). The genuine OM2D clean
+        # removes ~2.5% of elements on comparable input (MATLAB
+        # cross-test) — budget total deletions accordingly.
+        budget = max(int(0.03 * len(faces)), 25)
+        deleted = 0
         for _i in range(25):
             if len(faces) == 0:
                 logger.warning(
@@ -110,6 +118,12 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                     "the mesh; returning the uncleaned input"
                 )
                 return v_in, f_in
+            if deleted >= budget:
+                logger.info(
+                    "boundary-deletion budget reached (%d); "
+                    "stopping erosion", deleted
+                )
+                break
             _, boundary_vertices = _external_topology(vertices, faces)
             touching = np.isin(faces, boundary_vertices).any(axis=1)
             q = simp_qual(vertices, faces)
@@ -119,6 +133,13 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                 bad &= ~np.isin(faces, keep_idx).any(axis=1)
             if not bad.any():
                 break
+            if bad.sum() > budget - deleted:
+                # delete the worst ones only, up to the budget
+                order = np.argsort(q[bad])
+                bad_ids = np.where(bad)[0][order][: budget - deleted]
+                bad = np.zeros(len(faces), dtype=bool)
+                bad[bad_ids] = True
+            deleted += int(bad.sum())
             faces = faces[~bad]
             vertices, faces, _ = fix_mesh(vertices, faces,
                                           delete_unused=True)
