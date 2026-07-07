@@ -124,6 +124,8 @@ try:
         )
         s, b = _numba_inpoly_kernel(qx_s, qy_s, x1, y1, x2, y2,
                                     float(ftol) * span)
+        # Cython/Engwirda convention: boundary points count inside
+        s = s | b
         stat = np.empty_like(s)
         bnd = np.empty_like(b)
         stat[order] = s
