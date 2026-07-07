@@ -940,6 +940,8 @@ def generate_mesh(domain, edge_length, **kwargs):
     )
     qual_hist = []
     stall_count = 0
+    p_before_improve = None
+    qual_before_improve = 0.0
     pold = None
     ttol = 0.1  # meshgen.m:653 (movement-gated retriangulation)
     h0_gate = float(np.amin(min_edge_length))
@@ -1041,6 +1043,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                 keep = np.setdiff1d(np.arange(len(p)),
                                     np.fromiter(kill, int))
                 p = p[keep]
+                pold = None
                 continue
 
         at_checkpoint = (opts["improve_every"] > 0
@@ -1054,19 +1057,37 @@ def generate_mesh(domain, edge_length, **kwargs):
             )
             return p, t
 
+        # OM2D rewind of a failed improvement (meshgen.m:818-830):
+        # at mod(it, imp+1) restore the pre-improvement points when
+        # mean quality dropped > 0.10 or node count dropped > 10%
+        if (p_before_improve is not None
+                and (count + 1) % (opts["improve_every"] + 1) == 0):
+            mean_drop = qual_before_improve - qual_hist[-1][0]
+            count_drop = (len(p_before_improve) - len(p)) / max(
+                len(p_before_improve), 1
+            )
+            if mean_drop > 0.10 or count_drop > 0.10:
+                logger.info(
+                    "improvement rewound (mean drop %.3f, count "
+                    "drop %.1f%%)", mean_drop, 100 * count_drop,
+                )
+                p = p_before_improve
+                pold = None
+            p_before_improve = None
+
         if (opts["improve"] and at_checkpoint
                 and count + 1 >= 2 * opts["improve_every"]):
-            prev = qual_hist[-opts["improve_every"]][0]
-            if abs(qual_hist[-1][0] - prev) < (
+            # meshgen.m:884,952-953: gate on the 3-sigma-LOW metric
+            # and only act while quality is IMPROVING (qual_diff>0)
+            prev_l3 = qual_hist[-opts["improve_every"]][1]
+            qual_diff = qual_hist[-1][1] - prev_l3
+            if abs(qual_diff) < (
                     opts["improve_every"] * opts["qual_tol"]):
                 stall_count += 1
                 _ms = opts.get("max_stalls")
                 if _ms is not None and stall_count >= int(_ms):
-                    # convergence limit: mean quality has not moved
-                    # across max_stalls consecutive improvement
-                    # cycles — further iterations are wasted (the
-                    # user-mandated plateau cutoff; residual
-                    # quality is stage-2/manual-editing territory)
+                    # owner-requested plateau cutoff (opt-in; no
+                    # OM2D counterpart)
                     p, t, _ = fix_mesh(p, t, dim=_DIM,
                                        delete_unused=True)
                     p, t = _maybe_om2d_clean(p, t, opts, pfix, _cpp)
@@ -1078,11 +1099,15 @@ def generate_mesh(domain, edge_length, **kwargs):
                         qual_hist[-1][2], count + 1,
                     )
                     return p, t
-                p = _improve_points(
-                    p, t, fh, fd, geps, pfix, lock_boundary,
-                    opts["rewind_threshold"],
-                )
-                continue
+                if qual_diff > 0:
+                    p_before_improve = p.copy()
+                    qual_before_improve = qual_hist[-1][0]
+                    p = _improve_points(
+                        p, t, fh, fd, geps, pfix, lock_boundary,
+                        opts["rewind_threshold"],
+                    )
+                    pold = None
+                    continue
             else:
                 stall_count = 0
         # -------------------------------------------------------------
