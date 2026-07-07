@@ -307,6 +307,7 @@ def _parse_kwargs(kwargs):
             "qual_tol",
             "exit_quality",
             "max_stalls",
+        "cleanup",
             "heal_fixed_edges_every",
             "rewind_threshold",
         }:
@@ -819,7 +820,8 @@ def generate_mesh(domain, edge_length, **kwargs):
         "improve_every": 10,       # OM2D imp cadence
         "qual_tol": 0.01,          # OM2D qual_tol stagnation gate
         "exit_quality": 0.30,      # OM2D EXIT_QUALITY termination
-        "max_stalls": 3,           # plateau cutoff (user policy)
+        "max_stalls": 3,
+        "cleanup": "default",           # plateau cutoff (user policy)
         "heal_fixed_edges_every": 2,  # OM2D delIT cadence
         "rewind_threshold": 0.10,  # abort improvement on >10% loss
     }
@@ -956,6 +958,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                          and (count + 1) % opts["improve_every"] == 0)
         if at_checkpoint and qual_hist[-1][2] > opts["exit_quality"]:
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
             logger.info(
                 "Termination: minimum quality %.3f > %.2f",
                 qual_hist[-1][2], opts["exit_quality"],
@@ -976,6 +979,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                     # quality is stage-2/manual-editing territory)
                     p, t, _ = fix_mesh(p, t, dim=_DIM,
                                        delete_unused=True)
+                    p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
                     logger.info(
                         "Termination: quality plateau after %d "
                         "improvement cycles (mean %.4f, min %.4f) "
@@ -996,6 +1000,7 @@ def generate_mesh(domain, edge_length, **kwargs):
         # Number of iterations reached, stop.
         if count == (max_iter - 1):
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
+            p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
             logger.info("Termination reached...maximum number of iterations.")
             return p, t
 
@@ -1039,6 +1044,7 @@ def generate_mesh(domain, edge_length, **kwargs):
     p, t = _get_topology(dt)
     t = _remove_triangles_outside(p, t, fd, geps)
     p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
+    p, t = _maybe_om2d_clean(p, t, opts, pfix, nfix)
     logger.info("Termination reached...maximum number of iterations.")
     return p, t
 
@@ -1266,6 +1272,17 @@ def _dense(Ix, J, S, shape=None, dtype=None):
     II = Ix.flat
     J = J.flat
     return spsparse.coo_matrix((S, (II, J)), shape, dtype).toarray()
+
+
+
+def _maybe_om2d_clean(p, t, opts, pfix, nfix):
+    """OM2D meshgen.build parity: msh.clean('default') at every
+    build exit (meshgen.m:1063-1068) unless cleanup='none'."""
+    if opts.get("cleanup", "default") != "default":
+        return p, t
+    from .clean import om2d_default_clean
+
+    return om2d_default_clean(p, t, pfix=pfix if nfix else None)
 
 
 def _remove_triangles_outside(p, t, fd, geps):

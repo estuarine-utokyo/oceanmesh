@@ -71,6 +71,55 @@ def mesh_clean(
     return points, cells
 
 
+def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
+                       dj_cutoff=0.25, max_passes=3, pfix=None,
+                       smooth=True):
+    """OM2D ``msh.clean('default')`` as invoked by ``meshgen.build``.
+
+    Order (msh.m:1155-1248): boundary-quality deletion loop (db) ->
+    collapse_thin_triangles(db) -> Make_Mesh_Boundaries_Traversable
+    (djc) -> smoothing -> recursive re-clean while min quality stays
+    below mqa(=db) and the element count keeps changing.
+    ``Fix_single_connec_edge_elements`` is a no-op in OM2D's default
+    (sc_maxit=0) and is deliberately not run here.
+    """
+    from .fix_mesh import fix_mesh, simp_qual
+    from .mesh_improve import collapse_thin_triangles
+
+    for _ in range(max_passes):
+        n_faces_in = len(faces)
+        # 1. boundary-element quality loop (msh.m:1166-1184)
+        for _i in range(25):
+            _, boundary_vertices = _external_topology(vertices, faces)
+            touching = np.isin(faces, boundary_vertices).any(axis=1)
+            q = simp_qual(vertices, faces)
+            bad = touching & (q < min_qual_bound)
+            if not bad.any():
+                break
+            faces = faces[~bad]
+            vertices, faces, _ = fix_mesh(vertices, faces,
+                                          delete_unused=True)
+        # 2. sliver collapse at the same threshold (msh.m:1186-1187)
+        vertices, faces = collapse_thin_triangles(
+            vertices, faces, min_qual=min_qual_bound
+        )
+        # 3. boundary traversability (msh.m:1191)
+        vertices, faces = make_mesh_boundaries_traversable(
+            vertices, faces, min_disconnected_area=dj_cutoff
+        )
+        # 4. smoothing with boundary + pfix pinned (msh.m:1212-1221)
+        if smooth:
+            _, boundary_vertices = _external_topology(vertices, faces)
+            pin = boundary_vertices
+            if pfix is not None and len(pfix):
+                pin = np.unique(np.concatenate([pin, np.asarray(pfix)]))
+            vertices, faces = laplacian2(vertices, faces, pfix=pin)
+        q = simp_qual(vertices, faces)
+        if q.min() >= min_qual_bound or len(faces) == n_faces_in:
+            break
+    return vertices, faces
+
+
 def _arg_sortrows(arr):
     """Before a multi column sort like MATLAB's sortrows"""
     i = arr[:, 1].argsort()  # First sort doesn't need to be stable.
