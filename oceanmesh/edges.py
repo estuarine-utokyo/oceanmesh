@@ -24,15 +24,29 @@ def get_poly_edges(poly):
     """
     ix = np.argwhere(np.isnan(poly[:, 0])).ravel()
     ix = np.insert(ix, 0, -1)
+    if len(ix) == 1 or ix[-1] != len(poly) - 1:
+        ix = np.append(ix, len(poly))
 
     edges = []
     for s in range(len(ix) - 1):
         ix_start = ix[s] + 1
         ix_end = ix[s + 1] - 1
-        col1 = np.arange(ix_start, ix_end - 1)
-        col2 = np.arange(ix_start + 1, ix_end)
+        if ix_end <= ix_start:
+            continue
+        # consecutive segments p_i -> p_{i+1} over the WHOLE part.
+        # The previous arange stopped one row short, silently
+        # dropping each part's final segment; every ring reached
+        # inpoly2 as an open chain, flipping the crossing parity
+        # for scanlines through the missing segment's y-band
+        # (full-width stripes of misclassified points on the ECGC
+        # polygon boubox).
+        col1 = np.arange(ix_start, ix_end)
+        col2 = np.arange(ix_start + 1, ix_end + 1)
         tmp = np.vstack((col1, col2)).T
-        tmp = np.append(tmp, [[ix_end, ix_start]], axis=0)
+        if not np.array_equal(poly[ix_end], poly[ix_start]):
+            # close rings stored without the repeated first point;
+            # closed-stored rings need no (zero-length) extra edge
+            tmp = np.append(tmp, [[ix_end, ix_start]], axis=0)
         edges.append(tmp)
     return np.concatenate(edges, axis=0)
 
