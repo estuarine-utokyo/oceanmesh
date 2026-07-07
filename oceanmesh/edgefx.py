@@ -840,18 +840,15 @@ def feature_sizing_function(
     # of the distance gradient well inside the water, NOT a raster
     # skeleton — skimage medial_axis grows twigs to every coastal
     # concavity, collapsing W (=> uniformly tiny sizes on the coast)
-    # Gradient spacing per the .m (edgefx.m:306-308):
-    # dx = h0*cosd(lat) per row, dy = h0. Differentiating with the
-    # isotropic degree spacing instead depressed |grad d| along the
-    # domain-corner bisectors, planting SPURIOUS medial points
-    # there (fh 1 km at the open-ocean corners vs OM2D's 100 km —
-    # user-spotted corner refinement).
-    xeglen = grid_calc.dx * np.cos(
-        np.deg2rad(np.minimum(np.abs(lat[0, :]), 85.0))
-    )
-    ddy, ddx = np.gradient(d, axis=(1, 0))
-    ddy = ddy / grid_calc.dy
-    ddx = ddx / xeglen[None, :]
+    # Gradient spacing: the .m uses dx = h0*cosd(lat) per row
+    # (edgefx.m:306-308) because ITS distance field is metric
+    # (Mercator-projected dpoly). Our d is degree-euclidean, so the
+    # self-consistent spacing is the isotropic degree step; mixing
+    # the cos-scaled step with a degree-metric d inflates |grad d|
+    # for E-W-adjacent features and misses true medials (Fiordland
+    # N-S channels read 35% coarser). Revisit together with the
+    # dpoly Mercator-projection port.
+    ddx, ddy = np.gradient(d, grid_calc.dx, grid_calc.dy)
     d_fs = np.sqrt(ddx**2 + ddy**2)
     medial_mask = (d_fs < 0.90) & (d < -0.5 * h0)
 
