@@ -966,15 +966,25 @@ def generate_mesh(domain, edge_length, **kwargs):
             ) / h0_gate
         if move > ttol:
             if t is not None:
-                # fixmesh: dedup + drop unused vertices, keep pfix
+                # fixmesh([pfix; p]) (meshgen.m:793-795 +
+                # utilities/fixmesh.m:7-16): prepend pfix, then
+                # merge ALL near-coincident points on the ptol grid
+                # (ptol = 1024*eps relative to the mesh extent).
+                # Without this, improvement splits / projection
+                # pile-ups leave duplicate points => zero-area
+                # slivers that never heal (min quality ~0).
                 if len(pfix) > 0:
                     p = np.vstack((pfix, p))
-                    _keep = np.ones(len(p), dtype=bool)
-                    from scipy.spatial import cKDTree as _KD
-
-                    d_, i_ = _KD(p[: len(pfix)]).query(p[len(pfix):])
-                    _keep[len(pfix):][d_ < 1e-13] = False
-                    p = p[_keep]
+                ptol = 1024 * np.finfo(float).eps * float(
+                    np.max(np.ptp(p, axis=0))
+                )
+                _, ix = np.unique(
+                    np.round(p / ptol) * ptol, axis=0,
+                    return_index=True,
+                )
+                # keep first occurrences in original order so pfix
+                # rows survive the merge
+                p = p[np.sort(ix)]
             pold = p.copy()
 
             # (Re)-triangulation by the Delaunay algorithm
