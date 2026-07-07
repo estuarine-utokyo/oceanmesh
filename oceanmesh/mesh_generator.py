@@ -852,7 +852,9 @@ def generate_mesh(domain, edge_length, **kwargs):
         # meshgen.m:762-763: Fscale = 1.1 when fixed points exist
         L0mult = 1.1
     delta_t = opts["pseudo_dt"]
-    geps = 1e-3 * np.amin(min_edge_length)
+    # meshgen.m:652: geps = 1e-12*min(h0)/Re — effectively
+    # zero; keep only strictly-interior centroids
+    geps = 1e-12 * np.amin(min_edge_length)
     deps = np.sqrt(np.finfo(np.double).eps)  # * np.amin(min_edge_length)
 
     pfix, _nfix = _unpack_pfix(_DIM, opts)
@@ -938,20 +940,57 @@ def generate_mesh(domain, edge_length, **kwargs):
     )
     qual_hist = []
     stall_count = 0
+    pold = None
+    ttol = 0.1  # meshgen.m:653 (movement-gated retriangulation)
+    h0_gate = float(np.amin(min_edge_length))
+    t = None
     for count in range(max_iter):
         start = time.time()
 
-        # (Re)-triangulation by the Delaunay algorithm
-        if eg_segs is not None:
-            dt = CDT()
-            dt.insert(p.ravel().tolist())
-            dt.insert_constraints(eg_segs)
+        # movement-gated retriangulation (meshgen.m:791-798): only
+        # rebuild the topology when some point moved > ttol*h0;
+        # each rebuild first dedups points and drops vertices that
+        # ended up unused/outside (fixmesh([pfix; p]))
+        if pold is None or t is None:
+            move = np.inf
         else:
-            dt = DT()
-            dt.insert(p.ravel().tolist())
+            n_common = min(len(p), len(pold))
+            move = float(
+                np.max(
+                    np.sqrt(
+                        ((p[:n_common] - pold[:n_common]) ** 2).sum(1)
+                    )
+                )
+            ) / h0_gate
+        if move > ttol:
+            if t is not None:
+                # fixmesh: dedup + drop unused vertices, keep pfix
+                if len(pfix) > 0:
+                    p = np.vstack((pfix, p))
+                    _keep = np.ones(len(p), dtype=bool)
+                    from scipy.spatial import cKDTree as _KD
 
-        # Get the current topology of the triangulation
-        p, t = _get_topology(dt)
+                    d_, i_ = _KD(p[: len(pfix)]).query(p[len(pfix):])
+                    _keep[len(pfix):][d_ < 1e-13] = False
+                    p = p[_keep]
+            pold = p.copy()
+
+            # (Re)-triangulation by the Delaunay algorithm
+            if eg_segs is not None:
+                dt = CDT()
+                dt.insert(p.ravel().tolist())
+                dt.insert_constraints(eg_segs)
+            else:
+                dt = DT()
+                dt.insert(p.ravel().tolist())
+
+            # Get the current topology of the triangulation
+            p, t = _get_topology(dt)
+
+            # Remove points outside the domain, then prune vertices
+            # no interior triangle references (fixmesh semantics)
+            t = _remove_triangles_outside(p, t, fd, geps)
+            p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
 
         fixed_indices = []
         if lock_boundary:
@@ -965,9 +1004,6 @@ def generate_mesh(domain, edge_length, **kwargs):
                 ind = _closest_node(fix, p)
                 fixed_indices.append(ind)
                 p[ind] = fix
-
-        # Remove points outside the domain
-        t = _remove_triangles_outside(p, t, fd, geps)
 
         # --- OM2D meshgen.build parity block (port plan P1) ---------
         q = _al_quality(p, t)
