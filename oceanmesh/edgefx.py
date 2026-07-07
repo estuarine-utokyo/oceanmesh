@@ -482,8 +482,16 @@ def bathymetric_gradient_sizing_function(
     # Output lattice defaults to DEM resolution; optional integer coarsening
     if coarsen < 1 or int(coarsen) != coarsen:
         raise ValueError("coarsen must be a positive integer")
-    logger.info(f"Enforcing a minimum elevation cutoff of {min_elevation_cutoff}")
-    tmpz[tmpz >= min_elevation_cutoff] = min_elevation_cutoff
+    # edgefx.m:456: tmpz(tmpz > 50) = 50 — clamp only HIGH
+    # TOPOGRAPHY ("no larger than 50 m above land"); the previous
+    # fork behaviour flattened every cell shallower than
+    # min_elevation_cutoff (default -50), zeroing nearshore/shelf
+    # slopes (audit P0-5).
+    logger.info(
+        "Clamping topography above +%g m (edgefx.m:456)",
+        abs(min_elevation_cutoff),
+    )
+    tmpz[tmpz > abs(min_elevation_cutoff)] = abs(min_elevation_cutoff)
 
     dx, dy = dem.dx, dem.dy  # for gradient function (grid spacing units)
     nx, ny = dem.nx, dem.ny
@@ -726,12 +734,14 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
                 else:
                     tmpz_ft = filt2(tmpz[xr, yr], min([dxx, dy]), dy * mult, "lowpass")
 
-                # delete the padded region
-                tmpz_ft[: np.where(xr == 0)[0][0], :] = 0
-                tmpz_ft[nx:, :] = 0
-                tmpz_ft[:, : np.where(yr == n2s)[0][0]] = 0
-                tmpz_ft[:, n2e - n2s + 2 :] = 0
-                tmpz_ft = tmpz[:, n2s:n2e]
+                # delete the padded region (edgefx.m:568-573 removes
+                # the pad rows/cols with `=[]`) and KEEP the filtered
+                # block. The previous code zeroed the pad and then
+                # overwrote tmpz_ft with the UNFILTERED bathymetry —
+                # the whole Rossby low-pass was a no-op (audit P0-6).
+                r0 = int(np.where(xr.ravel() == 0)[0][0])
+                c0 = int(np.where(yr.ravel() == n2s)[0][0])
+                tmpz_ft = tmpz_ft[r0:r0 + nx, c0:c0 + (n2e - n2s)]
 
             else:
                 tmpz_ft = tmpz[:, n2s:n2e]
