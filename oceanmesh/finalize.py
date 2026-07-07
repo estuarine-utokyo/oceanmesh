@@ -296,15 +296,27 @@ def finalize_sizing(
         )
 
     if max_edge_length is not None:
+        # edgefx.m:855-870: limidx = hh > mx | isnan(hh) — the
+        # max_el pass also SCRUBS NaN cells to max_el. np.minimum
+        # propagates NaN instead (audit P1-10): NaN stripes from
+        # DEM gaps (e.g. SRTM15+ over the Bahamas banks) punched
+        # streaky holes into the ECGC mesh.
+        vals = np.asarray(grid.values, dtype=float)
         arr = np.asarray(max_edge_length, dtype=float)
         if arr.ndim == 0:
-            grid.values = np.minimum(grid.values, float(arr) / factor)
+            mx = float(arr) / factor
+            limidx = (vals > mx) | ~np.isfinite(vals)
+            vals[limidx] = mx
         else:
             if dem is None:
                 raise ValueError("banded max_edge_length needs dem")
             z = _dem_on_grid(grid, dem)
             cap = elevation_bands(arr, z, default=np.inf) / factor
-            grid.values = np.minimum(grid.values, cap)
+            limidx = (vals > cap) | (
+                ~np.isfinite(vals) & np.isfinite(cap)
+            )
+            vals[limidx] = np.broadcast_to(cap, vals.shape)[limidx]
+        grid.values = vals
 
     if weirs is not None:
         # OM2D weir spacing override: inside a buffer around each
