@@ -153,14 +153,24 @@ def test_make_bc_auto_requires_inputs():
 
 
 def test_bound_courant_number_decimates():
+    # partial violation (a deep stripe), as DecimateTria assumes:
+    # the .m warns and degrades when EVERY node violates
+    # (msh.m:3046-3048); a depth step makes ~1/3 of nodes exceed
+    # cr_max while the rest stay legal
     bbox = (0., 40000., 0., 40000.)
     p, t = om.generate_mesh(_cb(bbox), _uniform(2000.0), bbox=bbox,
                             min_edge_length=2000.0, max_iter=20,
                             improve=False)
-    dep = np.full(len(p), 3000.0)
+
+    def dep_fn(q):
+        return np.where(q[:, 0] > 26000.0, 3000.0, 30.0)
+
+    dep = dep_fn(p)
+    cr0 = om.calc_cfl(p, t, dep, dt=8.0, geographic=False)
+    assert (cr0 > 0.5).any() and not (cr0 > 0.5).all()
     p2, t2, b2 = om.bound_courant_number(
         p, t, dep, dt=8.0, cr_max=0.5, geographic=False,
-        depth_fn=lambda q: np.full(len(q), 3000.0))
+        depth_fn=dep_fn)
     assert om.calc_cfl(p2, t2, b2, dt=8.0,
                        geographic=False).max() <= 0.5 + 1e-9
 

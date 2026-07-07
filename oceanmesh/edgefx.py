@@ -969,7 +969,10 @@ def wavelength_sizing_function(
     dx, dy = dem.dx, dem.dy  # for gradient function
 
     if crs == "EPSG:4326" or crs == 4326:
-        mean_latitude = np.mean(dem.bbox[2:])
+        # audit P2: the cos() arguments were in DEGREES (missing
+        # np.radians), unlike the slope function's correct form at
+        # edgefx.py:505-509
+        mean_latitude = np.radians(np.mean(dem.bbox[2:]))
         meters_per_degree = (
             111132.92
             - 559.82 * np.cos(2 * mean_latitude)

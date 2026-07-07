@@ -73,7 +73,7 @@ def mesh_clean(
 
 def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                        dj_cutoff=0.25, max_passes=20, pfix=None,
-                       smooth=True):
+                       smooth=True, con=9):
     """OM2D ``msh.clean('default')`` as invoked by ``meshgen.build``.
 
     Order (msh.m:1155-1248): boundary-quality deletion loop (db) ->
@@ -158,9 +158,10 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
         try:
             from .mesh_improve import bound_connectivity
 
-            vertices, faces = bound_connectivity(
-                vertices, faces, max_valence=9, pfix=pfix
-            )
+            if con and con > 0:
+                vertices, faces = bound_connectivity(
+                    vertices, faces, max_valence=con, pfix=pfix
+                )
         except Exception:
             logger.warning("bound_connectivity failed; skipping")
 
@@ -361,6 +362,10 @@ def delete_exterior_faces(vertices, faces, min_disconnected_area):
     connected to the majority which represent a fractional
     area less than `min_disconnected_area`.
     """
+    if min_disconnected_area <= 0:
+        # Make_Mesh_Boundaries_Traversable.m:122-127: dj_cutoff of
+        # zero does nothing in delete_exterior_elements
+        return np.asarray(faces)
     t1 = copy.deepcopy(faces)
     t = np.array([])
     # Calculate the total area of the patch
