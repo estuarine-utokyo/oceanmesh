@@ -41,13 +41,17 @@ def area_length_quality(points, cells):
 
 
 def collapse_thin_triangles(points, cells, min_qual=0.10):
-    """Port of utilities/collapse_thin_triangles.m: while any element
-    has area-length quality < ``min_qual``, collapse its shortest
-    edge (remove one endpoint, remap to the other); skip collapses
-    that would create degenerate elements."""
+    """Exact port of utilities/collapse_thin_triangles.m: while any
+    element has MEAN-RATIO quality (gettrimeshquan qm, ~simp_qual)
+    below ``min_qual``, collapse its shortest edge; REVERT collapses
+    that would create index-degenerate elements
+    (collapse_thin_triangles.m:33-38)."""
+    from .fix_mesh import fix_mesh as _fix_mesh
+    from .fix_mesh import simp_qual
+
     p = np.array(points, dtype=float)
     t = np.array(cells, dtype=int)
-    qm = area_length_quality(p, t)
+    qm = simp_qual(p, t)
     kount = 0
     guard = 0
     while (qm < min_qual).any():
@@ -55,7 +59,6 @@ def collapse_thin_triangles(points, cells, min_qual=0.10):
         if guard > 10 * len(cells):
             logger.warning("collapse_thin_triangles: guard tripped")
             break
-        tid = int(np.argmin(qm >= min_qual))  # first below threshold
         tid = int(np.where(qm < min_qual)[0][0])
         tri = t[tid]
         ee = np.array([[tri[0], tri[1]], [tri[0], tri[2]],
@@ -63,31 +66,22 @@ def collapse_thin_triangles(points, cells, min_qual=0.10):
         evec = p[ee[:, 0]] - p[ee[:, 1]]
         meid = int(np.argmin((evec**2).sum(1)))
         rm, keep = int(ee[meid, 0]), int(ee[meid, 1])
+        t_old = t.copy()
         t = np.delete(t, tid, axis=0)
-        qm = np.delete(qm, tid)
         t[t == rm] = keep
-        # the (up to two) neighbours of the collapsed edge become
-        # index-degenerate: REMOVE them (OM2D semantics) instead of
-        # reverting — reverting made the whole routine a no-op
         degen = ((t[:, 0] == t[:, 1]) | (t[:, 1] == t[:, 2])
                  | (t[:, 0] == t[:, 2]))
         if degen.any():
-            t = t[~degen]
-            qm = qm[~degen]
-        # collapsing can fold two faces onto the same vertex
-        # triple: drop duplicates (and their stale qualities)
-        _, first = np.unique(np.sort(t, axis=1), axis=0,
-                             return_index=True)
-        if len(first) != len(t):
-            keep_rows = np.zeros(len(t), dtype=bool)
-            keep_rows[first] = True
-            t = t[keep_rows]
-            qm = qm[keep_rows]
+            # OM2D reverts (collapse_thin_triangles.m:33-38)
+            t = t_old
+            qm[tid] = 1.0
+            continue
+        qm = np.delete(qm, tid)
         touched = ((t == keep).any(axis=1))
         if touched.any():
-            qm[touched] = area_length_quality(p, t[touched])
+            qm[touched] = simp_qual(p, t[touched])
         kount += 1
-    p, t, _ = fix_mesh(p, t, delete_unused=True)
+    p, t, _ = _fix_mesh(p, t, delete_unused=True)
     logger.info(f"Removed {kount} thin triangles")
     return p, t
 
