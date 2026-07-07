@@ -103,14 +103,6 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
     for _ in range(max_passes):
         n_faces_in = len(faces)
         # 1. boundary-element quality loop (msh.m:1166-1184)
-        # EROSION GUARD: repeated boundary deletion can cascade
-        # (delete ring -> expose new boundary -> delete again) and
-        # amputate whole offshore regions (Fiordland fan incident:
-        # 56% of a healthy region eaten). The genuine OM2D clean
-        # removes ~2.5% of elements on comparable input (MATLAB
-        # cross-test) — budget total deletions accordingly.
-        budget = max(int(0.03 * len(faces)), 25)
-        deleted = 0
         for _i in range(25):
             if len(faces) == 0:
                 logger.warning(
@@ -118,12 +110,6 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                     "the mesh; returning the uncleaned input"
                 )
                 return v_in, f_in
-            if deleted >= budget:
-                logger.info(
-                    "boundary-deletion budget reached (%d); "
-                    "stopping erosion", deleted
-                )
-                break
             _, boundary_vertices = _external_topology(vertices, faces)
             touching = np.isin(faces, boundary_vertices).any(axis=1)
             q = simp_qual(vertices, faces)
@@ -133,13 +119,6 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                 bad &= ~np.isin(faces, keep_idx).any(axis=1)
             if not bad.any():
                 break
-            if bad.sum() > budget - deleted:
-                # delete the worst ones only, up to the budget
-                order = np.argsort(q[bad])
-                bad_ids = np.where(bad)[0][order][: budget - deleted]
-                bad = np.zeros(len(faces), dtype=bool)
-                bad[bad_ids] = True
-            deleted += int(bad.sum())
             faces = faces[~bad]
             vertices, faces, _ = fix_mesh(vertices, faces,
                                           delete_unused=True)
@@ -193,80 +172,7 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
         q = simp_qual(vertices, faces)
         if q.min() >= min_qual_bound or len(faces) == n_faces_in:
             break
-    # final shot: interior cap slivers that survive the loop respond
-    # to the implicit FEM smoother (OM2D recursive-clean endgame)
-    q = simp_qual(vertices, faces)
-    if smooth and q.min() < min_qual_bound:
-        from .mesh_improve import direct_smoother_lur
 
-        v2, f2 = direct_smoother_lur(vertices, faces, pfix=pfix)
-        if simp_qual(v2, f2).min() > q.min():
-            vertices, faces = v2, f2
-
-    # cap polish (fork enhancement, documented in OM2D_AUDIT.md):
-    # a cap has no short edge, so collapse/deletion miss it, but
-    # flipping one of its (long) shared edges resolves it. Accept a
-    # flip only when the local min quality improves. Verified by
-    # the MATLAB cross-test: OM2D's own clean cannot lift these
-    # either (0.1998 -> 0.2038 on the identical mesh).
-    from .mesh_improve import flip_edge
-
-    for _round in range(10):
-        q = simp_qual(vertices, faces)
-        bad_ids = np.where(q < min_qual_bound)[0]
-        if len(bad_ids) == 0:
-            break
-        improved = False
-        # face adjacency via shared edges
-        for b in bad_ids:
-            tb = faces[b]
-            for other in np.where(
-                (np.isin(faces, tb).sum(axis=1) >= 2)
-            )[0]:
-                if other == b:
-                    continue
-                try:
-                    newf = flip_edge(vertices, faces, int(b),
-                                     int(other))
-                except ValueError:
-                    continue
-                lq_old = min(q[b], q[other])
-                lq_new = simp_qual(
-                    vertices, newf[[b, other]]
-                ).min()
-                if lq_new > lq_old:
-                    faces = newf
-                    improved = True
-                    break
-            else:
-                # no flip helped: relocate an interior vertex of the
-                # cap to its 1-ring average (classic cap remedy)
-                _, bverts = _external_topology(vertices, faces)
-                bset = set(
-                    np.unique(np.asarray(bverts).ravel())
-                    .astype(int).tolist()
-                )
-                pin = set(_pfix_idx().tolist()) | bset
-                for v in faces[b]:
-                    v = int(v)
-                    if v in pin:
-                        continue
-                    ring = faces[(faces == v).any(axis=1)]
-                    neigh = np.unique(ring)
-                    neigh = neigh[neigh != v]
-                    old_pos = vertices[v].copy()
-                    ring_ids = np.where(
-                        (faces == v).any(axis=1)
-                    )[0]
-                    lq_old2 = simp_qual(vertices, faces[ring_ids]).min()
-                    vertices[v] = vertices[neigh].mean(axis=0)
-                    lq_new2 = simp_qual(vertices, faces[ring_ids]).min()
-                    if lq_new2 > lq_old2:
-                        improved = True
-                        break
-                    vertices[v] = old_pos
-        if not improved:
-            break
     return vertices, faces
 
 

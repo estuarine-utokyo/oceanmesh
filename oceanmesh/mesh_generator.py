@@ -1411,12 +1411,6 @@ def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=F
         for i, y in enumerate(ys):
             x0 = bbox[0][0] + (0.5 * dxs if i % 2 else 0.0)
             xs = np.arange(x0, bbox[0][1] + dxs, dxs)
-            if i % 2:
-                # keep the frame straight on offset rows, else the
-                # ragged rim gets shaved by the boundary clean
-                xs = np.concatenate(
-                    ([bbox[0][0]], xs, [bbox[0][1]])
-                )
             rows.append(
                 np.column_stack([xs, np.full(len(xs), y)])
             )
