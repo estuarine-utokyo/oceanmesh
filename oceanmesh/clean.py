@@ -320,8 +320,15 @@ def make_mesh_boundaries_traversable(vertices, faces, min_disconnected_area=0.05
     boundary_edges, boundary_vertices = _external_topology(vertices, faces)
 
     logger.info("Performing mesh cleaning operations...")
+    # OM2D forced entry (Make_Mesh_Boundaries_Traversable.m:77-79):
+    # with dj_cutoff > 0, run one exterior sweep even when the
+    # boundary is already valid — small disjoint/hanging exterior
+    # portions must be culled regardless (their run on the NZ mesh
+    # deletes ~600 exterior elements through this path).
+    force_entry = min_disconnected_area > 0
     # NB: when this inequality is not met, the mesh boundary is  not valid and non-manifold
-    while len(boundary_edges) > len(boundary_vertices):
+    while force_entry or len(boundary_edges) > len(boundary_vertices):
+        force_entry = False
         faces = delete_exterior_faces(vertices, faces, min_disconnected_area)
         vertices, faces, _ = fix_mesh(vertices, faces, delete_unused=True)
 
