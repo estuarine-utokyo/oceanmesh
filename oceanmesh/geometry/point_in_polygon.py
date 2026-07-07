@@ -51,13 +51,6 @@ logger = logging.getLogger(__name__)
 
 
 _COMPILED_KERNEL_AVAILABLE = False
-try:
-    from inpoly import inpoly2 as _ext_inpoly2
-
-    _HAVE_EXT_INPOLY = True
-except Exception:  # pragma: no cover - optional dependency
-    _HAVE_EXT_INPOLY = False
-
 _ACCEL_ENV = os.environ.get("OCEANMESH_INPOLY_ACCEL", "1")
 if _ACCEL_ENV.lower() not in {"0", "false", "no", "off"}:
     try:  # pragma: no cover - exercised only when extension present
@@ -149,23 +142,6 @@ def inpoly2(
     # OCEANMESH_INPOLY_ACCEL acting as an opt-in for acceleration when
     # method selection is left automatic.
     method_env = os.environ.get("OCEANMESH_INPOLY_METHOD", "").strip().lower()
-    # dengwirda's compiled inpoly (the engine OceanMesh2D's MEX
-    # kernel is built around): 26x faster than the local Cython
-    # kernel at W-Pacific scale (60k edges x 25k pts: 0.065 s vs
-    # 1.68 s), bit-identical results on cross-check. pip-installed
-    # (absent from conda-forge; documented exception).
-    if method_env in ("", "auto") and _HAVE_EXT_INPOLY:
-        try:
-            inside, bnds = _ext_inpoly2(
-                vert_valid, node_arr, edge_arr, ftol
-            )
-            stat = np.zeros(n_vert, dtype=bool)
-            bnd = np.zeros(n_vert, dtype=bool)
-            stat[valid_mask] = inside
-            bnd[valid_mask] = bnds
-            return stat, bnd
-        except Exception:
-            logger.warning("external inpoly failed; falling back")
     if (
         method_env not in {"raycasting", "shapely", "matplotlib"}
         and _COMPILED_KERNEL_AVAILABLE
