@@ -697,6 +697,10 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
         for i in range(len(edges)):
             if edges[i] > 0:
                 mult = 2 ** edges[i]
+                logger.info(
+                    f"Rossby filter: block {jj+1}/"
+                    f"{number_of_blocks} class 2^{int(edges[i])}"
+                )
                 xl, xu = 1, nx
                 if ((np.max(xg) > 179 and np.min(xg) < -179)) or (
                     np.max(xg) > 359 and np.min(xg) < 1

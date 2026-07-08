@@ -89,10 +89,22 @@ def gaussfilter(Z, sigma, truncate):
         x = np.arange(-r, r + 1, dtype=float)
         k = np.exp(-0.5 * (x / float(sigma)) ** 2)
         k /= k.sum()
-        A = np.pad(Z, ((r, r), (0, 0)), mode="edge")
-        A = oaconvolve(A, k[:, None], mode="valid", axes=0)
-        A = np.pad(A, ((0, 0), (r, r)), mode="edge")
-        A = oaconvolve(A, k[None, :], mode="valid", axes=1)
+
+        # chunk the off-axis dimension so FFT temporaries stay
+        # bounded (~hundreds of MB) on basin-scale grids
+        def _conv_axis0(A):
+            out = np.empty_like(A)
+            step = max(1, int(2**28 // max(A.shape[0] + 2 * r, 1)))
+            for j0 in range(0, A.shape[1], step):
+                j1 = min(A.shape[1], j0 + step)
+                blk = np.pad(A[:, j0:j1], ((r, r), (0, 0)),
+                             mode="edge")
+                out[:, j0:j1] = oaconvolve(
+                    blk, k[:, None], mode="valid", axes=0)
+            return out
+
+        A = _conv_axis0(np.asarray(Z, dtype=float))
+        A = _conv_axis0(A.T).T
         return A
 
     return gaussian_filter(Z, sigma, truncate=truncate, mode="nearest")
