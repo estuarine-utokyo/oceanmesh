@@ -731,11 +731,16 @@ def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False
             main_parts.append(poly)
 
     # Merge islands that OVERLAP the mainland (share >= 3 vertices
-    # at 1e-5 tolerance) into the mainland via polygon union,
-    # keeping holes (Read_shapefile.m:253-281: ismembertol +
-    # polyshape union). Overlapping rings double-count in the
-    # even-odd parity, flipping the overlap region to land.
-    if main_parts and islands:
+    # at ismembertol tolerance) into the mainland via polygon
+    # union (Read_shapefile.m:253-281). NB: upstream gates this on
+    # `~isempty(new_mainb) && k > 0` — new_mainb is only populated
+    # for THREE-DIMENSIONAL shapefiles (height column), so for
+    # ordinary 2-D coastlines (GSHHS, PostSandyNCEI) the merge
+    # NEVER RUNS (verified: MATLAB gdat keeps the 5,386 C5 wetland
+    # island points as inner). We do not support 3-D shapefiles,
+    # so the block is disabled to match.
+    _MERGE_OVERLAPPING = False
+    if _MERGE_OVERLAPPING and main_parts and islands:
         # ismembertol default scales tol by max(abs(coords))
         # (MATLAB ByRows): effective grid = 1e-5 * ~74 deg here
         _scale = max(
