@@ -1098,6 +1098,14 @@ def generate_mesh(domain, edge_length, **kwargs):
             "iter %3d: NP=%d qual mean=%.4f p3sig=%.4f min=%.4f",
             count + 1, len(p), *qual_hist[-1],
         )
+        _cwin = os.environ.get("OM_TRACE_CORNER")
+        if _cwin:
+            _x0, _x1, _y0, _y1 = map(float, _cwin.split(","))
+            _pl = _unproject(p) if _unproject is not None else p
+            _in = ((_pl[:, 0] > _x0) & (_pl[:, 0] < _x1)
+                   & (_pl[:, 1] > _y0) & (_pl[:, 1] < _y1))
+            logger.info("[corner] it=%d n=%d", count + 1,
+                        int(_in.sum()))
         if (os.environ.get("OM_TRACE_SCALE") == "1"
                 and (count + 1) % 10 == 0):
             _be, _ = _external_topology(p, t)

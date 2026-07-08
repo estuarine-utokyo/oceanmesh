@@ -305,7 +305,8 @@ def signed_distance_function(shoreline, invert=False):
     domain = Domain(shoreline.bbox, func, covering=func_covering, crs=crs, stereo=stereo)
     # meshgen.m:740-747 seeds the (densified) domain-outline points
     # into the initial distribution; carry the ring for the generator
-    domain.boubox_ring = _ring
+    _br = np.asarray(shoreline.boubox, dtype=float)
+    domain.boubox_ring = _br[np.isfinite(_br[:, 0])]
     return domain
 
 
