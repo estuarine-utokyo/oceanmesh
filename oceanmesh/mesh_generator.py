@@ -962,6 +962,25 @@ def generate_mesh(domain, edge_length, **kwargs):
             pfix,
             opts["stereo"],
         )
+        # meshgen.m:740-747: also seed the domain-outline ring
+        # points (rejection-thinned like the lattice) so frame-edge
+        # coverage is stable
+        _ring = getattr(domain, "boubox_ring", None)
+        if _ring is not None and len(_ring):
+            ring = np.asarray(_ring, dtype=float)
+            try:
+                ring = _to_proj(ring)
+            except NameError:
+                pass
+            ring = ring[fd(ring) < geps]
+            if len(ring):
+                r0 = fh(ring)
+                h0_ = float(np.amin(min_edge_length))
+                keep = np.random.rand(len(ring)) < h0_**2 / r0**2
+                p = np.vstack((p, ring[keep]))
+                logger.info(
+                    f"seeded {int(keep.sum())} domain-outline points"
+                )
     else:
         p = opts["points"]
 
