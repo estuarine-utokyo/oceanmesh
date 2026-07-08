@@ -77,6 +77,24 @@ highpass, bandpass or bandstop"
 def gaussfilter(Z, sigma, truncate):
     from scipy.ndimage import gaussian_filter
 
+    if np.isscalar(sigma) and float(sigma) > 32.0:
+        # same separable Gaussian kernel and 'nearest' padding as
+        # ndimage, but convolved via FFT overlap-add: O(N log k)
+        # instead of O(N k) — the Rossby filter reaches sigma ~163
+        # cells (kernel ~850) on basin-scale grids, where the
+        # direct form needs hours (Example_4 nest 1)
+        from scipy.signal import oaconvolve
+
+        r = int(truncate * float(sigma) + 0.5)
+        x = np.arange(-r, r + 1, dtype=float)
+        k = np.exp(-0.5 * (x / float(sigma)) ** 2)
+        k /= k.sum()
+        A = np.pad(Z, ((r, r), (0, 0)), mode="edge")
+        A = oaconvolve(A, k[:, None], mode="valid", axes=0)
+        A = np.pad(A, ((0, 0), (r, r)), mode="edge")
+        A = oaconvolve(A, k[None, :], mode="valid", axes=1)
+        return A
+
     return gaussian_filter(Z, sigma, truncate=truncate, mode="nearest")
 
 
