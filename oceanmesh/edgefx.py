@@ -858,7 +858,14 @@ def feature_sizing_function(
     # for E-W-adjacent features and misses true medials (Fiordland
     # N-S channels read 35% coarser). Revisit together with the
     # dpoly Mercator-projection port.
-    ddx, ddy = np.gradient(d, grid_calc.dx, grid_calc.dy)
+    # edgefx.m:304-307 verbatim: EarthGradient with PER-ROW
+    # x-spacing dx = h0*cosd(lat), dy = h0 (the earlier plain-h0
+    # gradient shifted the medial census systematically; the
+    # cos-dx form was reverted pre-land-only-d and never
+    # faithfully re-applied)
+    _xv, _yv = grid_calc.create_vectors()
+    _dxrow = grid_calc.dx * np.cos(np.deg2rad(_yv))
+    ddy, ddx = _earth_gradient(d, grid_calc.dy, _dxrow)
     d_fs = np.sqrt(ddx**2 + ddy**2)
     medial_mask = (d_fs < 0.90) & (d < -0.5 * h0)
 
