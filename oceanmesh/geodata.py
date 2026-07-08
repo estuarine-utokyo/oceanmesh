@@ -670,14 +670,75 @@ def _poly_length(coords):
 
 
 def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False):
-    """Classify segments in numpy.array `polys` as either `inner` or `mainland`.
-    (1) The `mainland` category contains segments that are not totally enclosed inside the `bbox`.
-    (2) The `inner` (i.e., islands) category contains segments totally enclosed inside the `bbox`.
-        NB: Removes `inner` geometry with area < `minimum_area_mult`*`h0`**2
-    (3) `boubox` polygon array is will be clipped by segments contained by `mainland`.
+    """Classify segments in numpy.array `polys` as either `inner` or
+    `mainland` per OM2D Read_shapefile.m:110-236: a ring wholly
+    inside the domain polygon is an island (`inner`), ANY other ring
+    is `mainland`, kept whole — no boolean clipping. The returned
+    domain ring is the densified `boubox` itself; the meshing sign
+    is the even-odd parity over [boubox; mainland; inner]
+    (Read_shapefile.m:283 stacks outer=[boubox;mainland] and
+    meshgen.m:329-331 appends inner), which handles arbitrary
+    nesting (e.g. Hackensack wetland channels: water-in-land-in-
+    domain) that the previous shapely difference() approach dropped.
+    NB: removes `inner` geometry with area < minimum_area_mult*h0**2.
     """
     logger.debug("Entering:_classify_shoreline")
 
+    if stereo:
+        return _classify_shoreline_stereo(
+            bbox, boubox, polys, h0, minimum_area_mult
+        )
+
+    _AREAMIN = minimum_area_mult * h0**2
+
+    if len(boubox) == 0:
+        boubox = _create_boubox(bbox)
+        boubox = np.asarray(boubox)
+    elif not _is_path_ccw(boubox):
+        boubox = np.flipud(boubox)
+
+    boubox = _densify(boubox, h0 / 2, bbox, radius=0.1)
+
+    isNaN = np.sum(np.isnan(boubox), axis=1) > 0
+    if any(isNaN):
+        boubox = np.delete(boubox, isNaN, axis=0)
+    del isNaN
+
+    from . import edges as _om_edges
+    from .geometry import inpoly2 as _inpoly2
+
+    ring = np.vstack((boubox, boubox[0], [[nan, nan]]))
+    e_box = _om_edges.get_poly_edges(ring)
+    ring_nn = np.nan_to_num(ring)
+
+    inner = np.empty(shape=(0, 2))
+    mainland = np.empty(shape=(0, 2))
+
+    for poly in _convert_to_list(polys):
+        pts = poly[:-2, :]
+        if len(pts) < 3:
+            continue
+        inside, _ = _inpoly2(pts, ring_nn, e_box)
+        if inside.all():
+            # wholly inside -> island (Read_shapefile.m:217-228)
+            if abs(_poly_area(pts[:, 0], pts[:, 1])) >= _AREAMIN:
+                inner = np.append(inner, poly, axis=0)
+        else:
+            # partially inside or outside -> mainland, kept WHOLE
+            # (Read_shapefile.m:229-241; no geometric clipping)
+            mainland = np.vstack((mainland, poly))
+
+    logger.debug("Exiting:classify_shoreline")
+    return inner, mainland, ring
+
+
+def _classify_shoreline_stereo(bbox, boubox, polys, h0, minimum_area_mult):
+    """Pre-Read_shapefile-port behavior, kept for the global stereo
+    path only (Antarctica boubox replacement relies on the shapely
+    difference mechanics)."""
+    logger.debug("Entering:_classify_shoreline_stereo")
+
+    stereo = True
     _AREAMIN = minimum_area_mult * h0**2
 
     if len(boubox) == 0:

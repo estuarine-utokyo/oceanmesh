@@ -206,7 +206,18 @@ def signed_distance_function(shoreline, invert=False):
     logger.info("Building a signed distance function...")
 
     assert isinstance(shoreline, Shoreline), "shoreline is not a Shoreline object"
-    poly = np.vstack((shoreline.inner, shoreline.boubox))
+    # OM2D dpoly semantics: distance to ALL rings (meshgen annData =
+    # outer(=boubox+mainland)+inner) and sign = even-odd parity over
+    # the same stack (Read_shapefile.m:283, meshgen.m:329-331,
+    # dpoly.m:40-44) — mainland MUST be in the parity set so that
+    # nested water (channel-in-land-in-domain) classifies as inside.
+    mainland = np.asarray(shoreline.mainland, dtype=float)
+    if mainland.size == 0:
+        mainland = np.empty((0, 2))
+    inner = np.asarray(shoreline.inner, dtype=float)
+    if inner.size == 0:
+        inner = np.empty((0, 2))
+    poly = np.vstack((shoreline.boubox, mainland, inner))
     tree = scipy.spatial.cKDTree(
         poly[~np.isnan(poly[:, 0]), :], balanced_tree=False, leafsize=50
     )
