@@ -1098,6 +1098,16 @@ def generate_mesh(domain, edge_length, **kwargs):
             "iter %3d: NP=%d qual mean=%.4f p3sig=%.4f min=%.4f",
             count + 1, len(p), *qual_hist[-1],
         )
+        if (os.environ.get("OM_TRACE_SCALE") == "1"
+                and (count + 1) % 10 == 0):
+            _be, _ = _external_topology(p, t)
+            _bi = np.unique(np.asarray(_be, dtype=int).reshape(-1))
+            _bd = np.abs(fd(p[_bi]))
+            logger.info(
+                "[traj] it=%d standoff mean=%.3e p90=%.3e nb=%d",
+                count + 1, float(_bd.mean()),
+                float(np.percentile(_bd, 90)), len(_bi),
+            )
 
         if (eg_segs is not None
                 and opts["heal_fixed_edges_every"] > 0
@@ -1413,6 +1423,12 @@ def _compute_forces(p, t, fh, min_edge_length, L0mult, opts):
         repl = np.nanmedian(hbars[valid])
         hbars = np.where(valid, hbars, repl)
     L0 = hbars * L0mult * (np.nanmedian(L) / np.nanmedian(hbars))
+    if os.environ.get("OM_TRACE_SCALE") == "1":
+        logger.info(
+            "[traj] medL=%.6e medH=%.6e ratio=%.6f nbars=%d",
+            float(np.nanmedian(L)), float(np.nanmedian(hbars)),
+            float(np.nanmedian(L) / np.nanmedian(hbars)), len(L),
+        )
     if opts.get("force_function", "bossen_heckbert") == "bossen_heckbert":
         # meshgen.m:1001-1005 verbatim: LN = L./L0;
         # F = (1-LN.^4).*exp(-LN.^4)./LN; F(isinf(F))=0;
