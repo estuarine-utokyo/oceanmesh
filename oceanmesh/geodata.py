@@ -268,6 +268,35 @@ def _try_subset_netcdf_with_xarray(dem_path, bbox_vals, crs_str):
 
 
 def _read_dem_array_and_meta(dem_path, bbox, crs, region_bbox, region_crs):
+    # subset cache: GDAL's netCDF driver row-reads windows, which
+    # is brutally slow on cold Lustre (~80 s for a 400 MB window,
+    # 97% of JBAY sizing time under cProfile). Cache the decoded
+    # subset keyed by (file, mtime, bbox) — numerically identical.
+    import hashlib as _hl
+
+    _cache_file = None
+    try:
+        _mt = Path(dem_path).stat().st_mtime_ns
+        _key = _hl.md5(
+            f"{dem_path}|{_mt}|{bbox}|{crs}|{region_bbox}|"
+            f"{region_crs}".encode()
+        ).hexdigest()[:16]
+        _cdir = Path(dem_path).parent / ".om_dem_cache"
+        _cdir.mkdir(exist_ok=True)
+        _cache_file = _cdir / f"{Path(dem_path).stem}_{_key}.npz"
+        if _cache_file.is_file():
+            _z = np.load(_cache_file, allow_pickle=True)
+            logger.info(f"DEM subset cache hit: {_cache_file.name}")
+            return (
+                tuple(_z["bbox_out"]),
+                _z["crs"].item(),
+                _z["meta"].item(),
+                _z["nodata"].item(),
+                _z["topobathy_xy"],
+            )
+    except Exception:
+        _cache_file = None
+
     open_target = _pick_netcdf_open_target(dem_path, bbox, crs)
 
     with rasterio.open(open_target) as src:
@@ -370,6 +399,18 @@ def _read_dem_array_and_meta(dem_path, bbox, crs, region_bbox, region_crs):
             )
             crs = src_crs.to_string()
 
+    if _cache_file is not None:
+        try:
+            np.savez_compressed(
+                _cache_file, topobathy_xy=topobathy_xy,
+                bbox_out=np.asarray(bbox_out, dtype=float),
+                crs=np.array(crs, dtype=object),
+                meta=np.array(meta, dtype=object),
+                nodata=np.array(nodata_value, dtype=object),
+            )
+            logger.info(f"DEM subset cached: {_cache_file.name}")
+        except Exception:
+            pass
     return bbox_out, crs, meta, nodata_value, topobathy_xy
 
 
