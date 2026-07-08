@@ -109,6 +109,50 @@ try:
                             bnd[i] = True
         return stat, bnd
 
+    @_nb.njit(cache=True, parallel=True)
+    def _numba_inpoly_kernel_par(qx_s, qy_s, x1, y1, x2, y2, ftol,
+                                 nblk):
+        n = qx_s.shape[0]
+        ne = x1.shape[0]
+        stat_b = np.zeros((nblk, n), _nb.boolean)
+        bnd_b = np.zeros((nblk, n), _nb.boolean)
+        blk = (ne + nblk - 1) // nblk
+        for b in _nb.prange(nblk):
+            e0 = b * blk
+            e1 = min(ne, e0 + blk)
+            for e in range(e0, e1):
+                ya = y1[e]; yb = y2[e]
+                xa = x1[e]; xb = x2[e]
+                lo = ya if ya < yb else yb
+                hi = yb if yb > ya else ya
+                i0 = np.searchsorted(qy_s, lo - ftol)
+                i1 = np.searchsorted(qy_s, hi + ftol)
+                dy = yb - ya
+                for i in range(i0, i1):
+                    qy = qy_s[i]
+                    qx = qx_s[i]
+                    ca = ya > qy
+                    cb = yb > qy
+                    if ca != cb:
+                        xint = xa + (qy - ya) * (xb - xa) / dy
+                        if qx < xint - ftol:
+                            stat_b[b, i] = not stat_b[b, i]
+                        elif qx <= xint + ftol:
+                            bnd_b[b, i] = True
+                    else:
+                        if abs(dy) <= ftol and abs(qy - ya) <= ftol:
+                            xmin = xa if xa < xb else xb
+                            xmax = xb if xb > xa else xa
+                            if xmin - ftol <= qx <= xmax + ftol:
+                                bnd_b[b, i] = True
+        stat = np.zeros(n, _nb.boolean)
+        bnd = np.zeros(n, _nb.boolean)
+        for b in range(nblk):
+            for i in range(n):
+                stat[i] = stat[i] != stat_b[b, i]
+                bnd[i] = bnd[i] or bnd_b[b, i]
+        return stat, bnd
+
     def _inpoly_numba(vert, node, edge, ftol):
         order = np.argsort(vert[:, 1], kind="stable")
         qx_s = np.ascontiguousarray(vert[order, 0])
@@ -122,8 +166,19 @@ try:
             float(np.nanmax(node[:, 1]) - np.nanmin(node[:, 1])),
             1.0,
         )
-        s, b = _numba_inpoly_kernel(qx_s, qy_s, x1, y1, x2, y2,
-                                    float(ftol) * span)
+        # XOR is commutative: the edge-block parallel kernel is
+        # bit-identical to the serial one (verified by the
+        # referee test-suite); threads come from NUMBA_NUM_THREADS
+        if len(edge) * max(len(vert), 1) > 5_000_000:
+            import numba as _nbm
+
+            _nt = max(1, min(_nbm.config.NUMBA_NUM_THREADS, 32))
+            s, b = _numba_inpoly_kernel_par(
+                qx_s, qy_s, x1, y1, x2, y2,
+                float(ftol) * span, _nt)
+        else:
+            s, b = _numba_inpoly_kernel(qx_s, qy_s, x1, y1, x2, y2,
+                                        float(ftol) * span)
         # Cython/Engwirda convention: boundary points count inside
         s = s | b
         stat = np.empty_like(s)
