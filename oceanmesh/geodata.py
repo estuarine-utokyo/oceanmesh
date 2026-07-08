@@ -736,16 +736,22 @@ def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False
     # polyshape union). Overlapping rings double-count in the
     # even-odd parity, flipping the overlap region to land.
     if main_parts and islands:
+        # ismembertol default scales tol by max(abs(coords))
+        # (MATLAB ByRows): effective grid = 1e-5 * ~74 deg here
+        _scale = max(
+            float(np.nanmax(np.abs(mp))) for mp in main_parts
+        )
+        _grid = 1e-5 * max(_scale, 1.0)
         main_vset = set()
         for mp in main_parts:
             fp = mp[~np.isnan(mp[:, 0])]
-            for r in np.round(fp / 1e-5).astype(np.int64):
+            for r in np.round(fp / _grid).astype(np.int64):
                 main_vset.add((int(r[0]), int(r[1])))
         merged_polys = []
         keep_islands = []
         for isl in islands:
             fp = isl[~np.isnan(isl[:, 0])]
-            r = np.round(fp / 1e-5).astype(np.int64)
+            r = np.round(fp / _grid).astype(np.int64)
             nshared = sum(
                 (int(a), int(b)) in main_vset for a, b in r
             )
