@@ -1363,43 +1363,53 @@ class Shoreline(Region):
             island_mult=self.minimum_area_mult, mainland_mult=100.0
         )
 
-        if coarsen_outside:
-            # OM2D coarsen_polygon: decimate detail outside the
-            # (inflated) domain polygon
-            polys = _coarsen_outside(
-                polys, self.boubox, inflation=coarsen_inflation
-            )
-
-        # OM2D my_interpm: densify (insert-only, NEVER decimate) so
-        # gaps < h0/2 (geodata.m:382-397)
-        polys = _densify(polys, 0.5 * self.h0, self.bbox)
-
-        # OM2D smooth_coastline: 5-point boxcar AFTER densification
-        # (geodata.m:400-415); chaikin retained as an opt-in only
-        if smooth_shoreline:
-            if smoothing_method == "moving_average":
-                polys = _moving_average_smooth(
-                    polys, window=smoothing_window
-                )
-            elif smoothing_method == "chaikin":
-                polys = _smooth_shoreline(polys, self.refinements)
-            elif smoothing_method is not None:
-                raise ValueError(
-                    "smoothing_method must be 'chaikin', "
-                    "'moving_average', or None"
-                )
-
-        polys = _clip_polys(polys, self.bbox)
-
-        # keep the PRE-densification region ring: _classify_shoreline
-        # densifies/clips self.boubox, after which it no longer
-        # reconstructs the region polygon (edge-wise NaN segments,
-        # duplicate vertices) — the multiscale covering test needs
-        # the true region (Obitsu I11/J11 incident).
+        # keep the PRE-densification region ring: the multiscale
+        # covering test needs the true region (Obitsu I11/J11
+        # incident).
         self.region_polygon = np.asarray(self.boubox, dtype=float)
+
+        # OM2D order (geodata.m:333-360 then :363-441): classify —
+        # and merge overlapping rings — on the RAW polygons
+        # (Read_shapefile), THEN densify/smooth/coarsen each
+        # category (ClassifyShoreline). Classifying after the
+        # per-ring smoothing broke the overlap merge: shared
+        # vertices no longer matched at 1e-5. OM2D never clips
+        # mainland rings (kept whole); coarsen_polygon bounds the
+        # query cost instead.
         self.inner, self.mainland, self.boubox = _classify_shoreline(
             self.bbox, self.boubox, polys, self.h0 / 2, self.minimum_area_mult, stereo
         )
+
+        def _postprocess(arr):
+            arr = np.asarray(arr, dtype=float)
+            if arr.size == 0:
+                return arr.reshape(0, 2)
+            if coarsen_outside:
+                # OM2D coarsen_polygon (geodata.m:417-441)
+                arr = _coarsen_outside(
+                    arr, self.region_polygon,
+                    inflation=coarsen_inflation,
+                )
+            # my_interpm: densify, insert-only (geodata.m:382-397)
+            arr = _densify(arr, 0.5 * self.h0, self.bbox)
+            # smooth_coastline: 5-pt boxcar AFTER densification
+            # (geodata.m:400-415); chaikin retained as opt-in
+            if smooth_shoreline:
+                if smoothing_method == "moving_average":
+                    arr = _moving_average_smooth(
+                        arr, window=smoothing_window
+                    )
+                elif smoothing_method == "chaikin":
+                    arr = _smooth_shoreline(arr, self.refinements)
+                elif smoothing_method is not None:
+                    raise ValueError(
+                        "smoothing_method must be 'chaikin', "
+                        "'moving_average', or None"
+                    )
+            return arr
+
+        self.inner = _postprocess(self.inner)
+        self.mainland = _postprocess(self.mainland)
 
     @property
     def shp(self):
