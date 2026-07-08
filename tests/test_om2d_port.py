@@ -81,11 +81,21 @@ def test_generator_bossen_heckbert():
 def test_generator_egfix_holds():
     pf = np.array([[0.2, 0.2], [0.5, 0.5], [0.8, 0.8]])
     eg = np.array([[0, 1], [1, 2]])
-    p, t = _unit_mesh(pfix=pf, egfix=eg)
     from scipy.spatial import cKDTree
 
+    # iteration contract: pfix rows pinned exactly while the loop
+    # runs (meshgen.m F(1:nfix)=0)
+    p, t = _unit_mesh(pfix=pf, egfix=eg, cleanup="none")
     d, _ = cKDTree(p).query(pf)
     assert d.max() < 1e-12
+
+    # the OM2D default clean is pfix-agnostic in its db/collapse
+    # stages (msh.m:1166-1187): constrained points may drift by up
+    # to ~the local edge length; OM2D relocates weir nodes by
+    # tolerant nearest search afterwards (make_bc 'weirs')
+    p, t = _unit_mesh(pfix=pf, egfix=eg)
+    d, _ = cKDTree(p).query(pf)
+    assert d.max() < 0.08
 
 
 # ---------------- P2: improvement / BC / IO / CFL --------------------

@@ -120,10 +120,10 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             )
             touching = np.isin(faces, bnd_idx).any(axis=1)
             q = simp_qual(vertices, faces)
+            # msh.m:1166-1184: the db loop has NO pfix protection —
+            # pfix only selects the smoother and rides the
+            # recursion (msh.m:1133,1219,1246)
             bad = touching & (q < min_qual_bound)
-            keep_idx = _pfix_idx()
-            if len(keep_idx):
-                bad &= ~np.isin(faces, keep_idx).any(axis=1)
             if not bad.any():
                 break
             faces = faces[~bad]
@@ -136,10 +136,10 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             )
             return v_in, f_in
         # 2. sliver collapse at the same threshold (msh.m:1186-1187)
-        if pfix is None:
-            vertices, faces = collapse_thin_triangles(
-                vertices, faces, min_qual=min_qual_bound
-            )
+        # — unconditional in the .m, pfix or not
+        vertices, faces = collapse_thin_triangles(
+            vertices, faces, min_qual=min_qual_bound
+        )
         if len(faces) == 0:
             logger.warning(
                 "om2d_default_clean: collapse deleted the whole "
@@ -159,8 +159,9 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             from .mesh_improve import bound_connectivity
 
             if con and con > 0:
+                # msh.m:1203-1209 bound_con_int takes no pfix
                 vertices, faces = bound_connectivity(
-                    vertices, faces, max_valence=con, pfix=pfix
+                    vertices, faces, max_valence=con
                 )
         except Exception:
             logger.warning("bound_connectivity failed; skipping")
