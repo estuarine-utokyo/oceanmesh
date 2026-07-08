@@ -1572,7 +1572,12 @@ def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=F
         r0 = fh(to_lat_lon(p[:, 0], p[:, 1])) * _stereo_distortion(p0[:, 1])
     else:
         r0 = fh(p)
-    r0m = np.min(r0[r0 >= min_edge_length])
+    # meshgen.m:668 anchors the rejection at h0 itself
+    # (max_r0 = 1/h0_l^2): accept with prob (h0/fh)^2. Anchoring at
+    # the lattice-sampled minimum over-seeds by (min_sampled/h0)^2
+    # (2.8x on the JBAY weir case, where the h0-sized cells are a
+    # tiny sliver of the domain).
+    r0m = float(np.amin(min_edge_length))
     p = p[np.random.rand(p.shape[0]) < r0m**2 / r0**2]
     p = p[fd(p) < geps]  # Keep only d<0 points
     return np.vstack(
