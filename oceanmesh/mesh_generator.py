@@ -776,8 +776,14 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         ys = np.arange(y0, y1 + h, h)
         rows = []
         for i, yv in enumerate(ys):
-            xs = np.arange(x0 + (0.5 * dxs if i % 2 else 0.0),
-                           x1 + dxs, dxs)
+            # meshgen.m:697-704 builds rows by METRIC length
+            # (m_lldist): in longitude degrees the column step is
+            # dxs/cos(lat); a plain-degree lattice over-seeds by
+            # 1/cos(lat) (x1.32 at 40.75N on Example_3 nest 2)
+            _c = max(np.cos(np.deg2rad(yv)), 0.05)
+            dxr = dxs / _c
+            xs = np.arange(x0 + (0.5 * dxr if i % 2 else 0.0),
+                           x1 + dxr, dxr)
             rows.append(np.column_stack(
                 [xs, np.full(len(xs), yv)]))
         p1 = np.vstack(rows)
