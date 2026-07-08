@@ -829,6 +829,30 @@ def feature_sizing_function(
     # domain parity. Using the frame-inclusive SDF distance planted
     # spurious medial points along the domain-corner bisectors
     # (fh 1 km at open-ocean corners vs OM2D's 100 km).
+    # METRIC distances (@edgefx/private/WrapperForKsearch.m: both
+    # point sets go through m_ll2xy and the returned distances are
+    # great-circle METRES via m_lldist) — the whole edgefx feature
+    # pipeline (d, medial tests, dPOS, W, fsd) is metre-based in
+    # OM2D. A raw-degree KD is direction-anisotropic (E-W distances
+    # undercounted by cos(lat)) and biased the medial census.
+    from pyproj import Transformer as _Transformer
+
+    _bb = shoreline.bbox
+    _lo0 = 0.5 * (_bb[0] + _bb[1])
+    _la0 = 0.5 * (_bb[2] + _bb[3])
+    _trm = _Transformer.from_crs(
+        "EPSG:4326",
+        f"+proj=tmerc +lon_0={_lo0} +lat_0={_la0} "
+        "+ellps=WGS84 +units=m",
+        always_xy=True,
+    )
+
+    def _to_m(q):
+        x, y = _trm.transform(q[:, 0], q[:, 1])
+        return np.column_stack([x, y])
+
+    h0_m = h0 * 111e3
+    qpts_m = _to_m(qpts)
     land_pts = [
         np.asarray(a)
         for a in (shoreline.mainland, shoreline.inner)
@@ -837,14 +861,15 @@ def feature_sizing_function(
     if land_pts:
         land = np.vstack(land_pts)
         land = land[~np.isnan(land[:, 0])]
-        ltree = scipy.spatial.cKDTree(land)
-        dist_land, _ = ltree.query(qpts, k=1, workers=-1)
+        ltree = scipy.spatial.cKDTree(_to_m(land))
+        dist_land, _ = ltree.query(qpts_m, k=1, workers=-1)
         sgn = np.where(
             signed_distance_function.eval(qpts) < 0, -1.0, 1.0
         )
         d = (sgn * dist_land).reshape(lon.shape)
     else:
-        d = signed_distance_function.eval(qpts).reshape(lon.shape)
+        d = (signed_distance_function.eval(qpts) * 111e3
+             ).reshape(lon.shape)
 
     # OM2D medial-axis extraction (edgefx.m:291-355): singularities
     # of the distance gradient well inside the water, NOT a raster
@@ -864,10 +889,11 @@ def feature_sizing_function(
     # cos-dx form was reverted pre-land-only-d and never
     # faithfully re-applied)
     _xv, _yv = grid_calc.create_vectors()
-    _dxrow = grid_calc.dx * np.cos(np.deg2rad(_yv))
-    ddy, ddx = _earth_gradient(d, grid_calc.dy, _dxrow)
+    _dxrow_m = grid_calc.dx * 111e3 * np.cos(np.deg2rad(_yv))
+    _dy_m = grid_calc.dy * 111e3
+    ddy, ddx = _earth_gradient(d, _dy_m, _dxrow_m)
     d_fs = np.sqrt(ddx**2 + ddy**2)
-    medial_mask = (d_fs < 0.90) & (d < -0.5 * h0)
+    medial_mask = (d_fs < 0.90) & (d < -0.5 * h0_m)
 
     # narrow-channel fix (edgefx.m:313-327): water cell whose N/S or
     # E/W neighbours are both land
@@ -886,12 +912,13 @@ def feature_sizing_function(
     # points — 2nd/3rd/4th neighbours within co, 2co, 3co * h0
     co = 2.0 * np.sqrt(2.0)
     if len(medial_points) > 12:
-        mtree = scipy.spatial.cKDTree(medial_points)
-        dmed, _ = mtree.query(medial_points, k=4, workers=-1)
+        _mp_m = _to_m(medial_points)
+        mtree = scipy.spatial.cKDTree(_mp_m)
+        dmed, _ = mtree.query(_mp_m, k=4, workers=-1)
         prune = (
-            (dmed[:, 1] > co * h0)
-            | (dmed[:, 2] > 2 * co * h0)
-            | (dmed[:, 3] > 3 * co * h0)
+            (dmed[:, 1] > co * h0_m)
+            | (dmed[:, 2] > 2 * co * h0_m)
+            | (dmed[:, 3] > 3 * co * h0_m)
         )
         medial_points = medial_points[~prune]
 
@@ -900,12 +927,12 @@ def feature_sizing_function(
         logger.warning(
             "No medial points, resorting to distance function"
         )
-        grid_calc.values = h0 + 0.15 * np.abs(d)
+        grid_calc.values = h0 + 0.15 * np.abs(d) / 111e3
     else:
-        tree = scipy.spatial.cKDTree(medial_points)
-        dMA, _ = tree.query(qpts, k=1, workers=-1)
+        tree = scipy.spatial.cKDTree(_to_m(medial_points))
+        dMA, _ = tree.query(qpts_m, k=1, workers=-1)
         dMA = dMA.reshape(lon.shape)
-        W = dMA + np.abs(d)
+        W = (dMA + np.abs(d)) / 111e3  # back to degree units
         if r < 0:
             # OM2D automatic mode (fs < 0): cap the element count
             # per feature at -r, but never demand more elements
