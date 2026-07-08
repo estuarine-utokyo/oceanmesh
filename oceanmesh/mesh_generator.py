@@ -974,6 +974,7 @@ def generate_mesh(domain, edge_length, **kwargs):
     )
     qual_hist = []
     stall_count = 0
+    heal_consecutive = 0
     p_before_improve = None
     qual_before_improve = 0.0
     pold = None
@@ -1038,18 +1039,34 @@ def generate_mesh(domain, edge_length, **kwargs):
             t = _remove_triangles_outside(p, t, fd, geps)
             p, t, _ = fix_mesh(p, t, dim=_DIM, delete_unused=True)
 
+            # restore the OM2D contract p(1:nfix,:) == pfix
+            # (meshgen.m keeps pfix as the permanent first rows;
+            # CGAL does not preserve insertion order, and the old
+            # per-iteration closest-node snapping made the fixed
+            # set drift — heal_fixed_edges then over-fired and its
+            # `continue` starved the improvement cycle)
+            if len(pfix) > 0:
+                from scipy.spatial import cKDTree
+
+                d_, ix_ = cKDTree(p).query(pfix)
+                perm = np.concatenate(
+                    [ix_, np.setdiff1d(np.arange(len(p)), ix_)]
+                )
+                inv = np.empty(len(p), dtype=int)
+                inv[perm] = np.arange(len(p))
+                p = p[perm]
+                t = inv[t]
+                p[:len(pfix)] = pfix
+
         fixed_indices = []
         if lock_boundary:
             _, bpts = _external_topology(p, t)
             for fix in bpts:
                 fixed_indices.append(_closest_node(fix, p))
 
-        # Find where pfix went
         if len(pfix) > 0:
-            for fix in pfix:
-                ind = _closest_node(fix, p)
-                fixed_indices.append(ind)
-                p[ind] = fix
+            p[:len(pfix)] = pfix
+            fixed_indices.extend(range(len(pfix)))
 
         # --- OM2D meshgen.build parity block (port plan P1) ---------
         q = _al_quality(p, t)
@@ -1066,21 +1083,28 @@ def generate_mesh(domain, edge_length, **kwargs):
         if (eg_segs is not None
                 and opts["heal_fixed_edges_every"] > 0
                 and (count + 1) % opts["heal_fixed_edges_every"] == 0):
-            # OM2D heal_fixed_edges: kill the free vertex of thin
-            # triangles that touch a constrained edge.
-            fixed_now = set()
-            for fix in pfix:
-                fixed_now.add(_closest_node(fix, p))
+            # heal_fixed_edges (meshgen.m:1153-1168): thin (<0.25)
+            # triangles CONTAINING a constrained edge lose their
+            # free (>nfix) vertices. pfix rows are stable now, so
+            # egfix pairs index p directly.
+            nfix_ = len(pfix)
+            eg_set = {(int(a), int(b)) if a < b else (int(b), int(a))
+                      for a, b in egfix}
             thin = np.where(q < 0.25)[0]
             kill = set()
             for e in thin:
-                tri = t[e]
-                on_fix = [v for v in tri if int(v) in fixed_now]
-                if len(on_fix) >= 2:
-                    free = [int(v) for v in tri
-                            if int(v) not in fixed_now]
-                    kill.update(free)
-            if kill:
+                tri = sorted(int(v) for v in t[e])
+                prs = [(tri[0], tri[1]), (tri[0], tri[2]),
+                       (tri[1], tri[2])]
+                if any(pr in eg_set for pr in prs):
+                    kill.update(v for v in tri if v >= nfix_)
+            if kill and heal_consecutive < 4:
+                # delIT escape valve (meshgen.m:867-878): after 4
+                # consecutive heals give up and let the iteration
+                # (and the improvement cycle) proceed — without it
+                # the every-2nd-iteration `continue` starves
+                # improvement forever on crowded constrained meshes
+                heal_consecutive += 1
                 logger.info(
                     f"heal_fixed_edges: removing {len(kill)} vertices"
                 )
@@ -1089,6 +1113,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                 p = p[keep]
                 pold = None
                 continue
+            heal_consecutive = 0
 
         at_checkpoint = (opts["improve_every"] > 0
                          and (count + 1) % opts["improve_every"] == 0)
@@ -1119,11 +1144,13 @@ def generate_mesh(domain, edge_length, **kwargs):
                 pold = None
             p_before_improve = None
 
-        if (opts["improve"] and at_checkpoint
-                and count + 1 >= 2 * opts["improve_every"]):
-            # meshgen.m:884,952-953: gate on the 3-sigma-LOW metric
-            # and only act while quality is IMPROVING (qual_diff>0)
-            prev_l3 = qual_hist[-opts["improve_every"]][1]
+        if opts["improve"] and at_checkpoint:
+            # meshgen.m:883,952-953: gate on the 3-sigma-LOW metric
+            # vs qual(max(1, it-imp)) — active from the FIRST
+            # checkpoint — and only act while quality is IMPROVING
+            prev_l3 = qual_hist[
+                max(0, len(qual_hist) - 1 - opts["improve_every"])
+            ][1]
             qual_diff = qual_hist[-1][1] - prev_l3
             if abs(qual_diff) < (
                     opts["improve_every"] * opts["qual_tol"]):
@@ -1296,8 +1323,7 @@ def _improve_points(p, t, fh, fd, geps, pfix, lock_boundary,
     mod(it, imp+1) rewind (meshgen.m:818-830) is the only guard."""
     n0 = len(p)
     protected = set()
-    for fix in pfix:
-        protected.add(_closest_node(fix, p))
+    protected.update(range(len(pfix)))
     _, bpts = _external_topology(p, t)
     bnd_protected = set(protected)
     for b in bpts:

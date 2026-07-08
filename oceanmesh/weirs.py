@@ -17,34 +17,49 @@ __all__ = ["build_weir_geometry", "match_weir_nodes"]
 _DEG = 1.0 / 111e3
 
 
-def _resample(line, spacing):
-    seg = np.linalg.norm(np.diff(line, axis=0), axis=1)
-    s = np.concatenate([[0.0], np.cumsum(seg)])
-    n = max(int(np.ceil(s[-1] / spacing)) + 1, 2)
-    si = np.linspace(0.0, s[-1], n)
-    return np.column_stack(
-        [np.interp(si, s, line[:, 0]), np.interp(si, s, line[:, 1])]
-    )
+def _my_interpm(line, spacing):
+    """1:1 port of utilities/my_interpm.m: insert-only
+    densification with the PER-COMPONENT (Chebyshev) segment
+    measure — nin = ceil(max(|dlat|,|dlon|)/maxdiff) - 1 interior
+    points per segment (my_interpm.m:14-16), NOT Euclidean."""
+    out = []
+    for a, b in zip(line[:-1], line[1:]):
+        ni = int(np.ceil(
+            max(abs(b[0] - a[0]), abs(b[1] - a[1])) / spacing
+        )) - 1
+        if ni <= 0:
+            out.append(a)
+        else:
+            xs = np.linspace(a[0], b[0], ni + 2)
+            ys = np.linspace(a[1], b[1], ni + 2)
+            out.extend(np.column_stack([xs, ys])[:ni + 1])
+    out.append(line[-1])
+    return np.asarray(out)
 
 
 def build_weir_geometry(crestline, width_m, spacing_m=None,
                         geographic=True):
-    """Port of GenerateWeirGeometry. Returns (pfix, egfix, pairs):
-    the closed racetrack outline points/edges to pass to the mesh
+    """1:1 port of GenerateWeirGeometry.m. Returns (pfix, egfix,
+    pairs): the racetrack outline points/ring edges for the mesh
     generator, and the (K, 4) array of paired [x_up, y_up, x_dn,
-    y_dn] points across the crest (ADCIRC ibconn)."""
+    y_dn] points across the crest (ADCIRC ibconn).
+
+    NB the .m normalizes the offset directions by the MATRIX
+    2-norm (``u = v./norm(v)``, GenerateWeirGeometry.m:10), NOT
+    row-wise, so the face separation varies along the crest and
+    is generally much smaller than ``width_m``; replicated
+    verbatim for parity.
+    """
     f = _DEG if geographic else 1.0
     width = 0.5 * width_m * f
     spacing = (spacing_m if spacing_m else 2.0 * width_m) * f
-    line = _resample(np.asarray(crestline, float), spacing)
+    line = _my_interpm(np.asarray(crestline, float), spacing)
     dx = np.gradient(line[:, 0])
     dy = np.gradient(line[:, 1])
-    nrm = np.column_stack([-dy, dx])
-    nrm /= np.maximum(
-        np.linalg.norm(nrm, axis=1)[:, None], 1e-30
-    )
-    above = line[1:-1] + width * nrm[1:-1]
-    below = line[1:-1] - width * nrm[1:-1]
+    v = np.column_stack([-dy, dx])
+    u = v / np.linalg.norm(v, 2)
+    above = line[1:-1] + width * u[1:-1]
+    below = line[1:-1] - width * u[1:-1]
     pairs = np.hstack([above, below])
     pfix = np.vstack([line[0], below, line[-1], above[::-1]])
     n = len(pfix)
