@@ -1092,6 +1092,7 @@ def multiscale_sizing_function(
     nnear=28,
     blend_width=1000,
     domain_metadata=None,
+    gradation=0.15,
 ):
     """Given a list of mesh size functions in a hierarchy
     w.r.t. to minimum mesh size (largest -> smallest),
@@ -1120,51 +1121,74 @@ def multiscale_sizing_function(
     for i, grid in enumerate(list_of_grids[:-1]):
         assert grid.dx >= list_of_grids[i + 1].dx, err
 
-    new_list_of_grids = []
-    # loop through remaining sizing functions
-    for idx1, new_coarse in enumerate(list_of_grids[:-1]):
-        logger.info(f"For sizing function #{idx1}")
+    # smooth_outer.m semantics (meshgen.m:394): PASTE each finer
+    # nest's values onto the coarse lattice (masked to the finer
+    # boubox), then relax the coarse grid with limgradStruct at
+    # the coarse grid's gradation. The previous IDW blend spilled
+    # near-fine sizes 3-5 coarse cells outward (Example_10
+    # transition mismatch); blend_width/p/nnear are retained in
+    # the signature for compatibility but unused.
+    from .finalize import _limgrad_struct
 
-        # interpolate all finer nests onto coarse func and enforce gradation rate
-        for k, finer in enumerate(list_of_grids[idx1 + 1 :]):
-            logger.info(
-                f"  Interpolating sizing function #{idx1 + 1 + k} onto sizing function #{idx1}"
-            )
-            _wkt = finer.crs.to_dict()
-            if "units" in _wkt:
-                _dx = finer.dx
-            else:
-                # it must be degrees?
-                _dx = finer.dx * 111e3
-            _blend_width = int(np.floor(blend_width / _dx))
+    grads = (list(gradation) if np.ndim(gradation) else
+             [float(gradation)] * (len(list_of_grids) - 1))
+    new_list_of_grids = []
+    for idx1, coarse in enumerate(list_of_grids[:-1]):
+        vals = np.array(coarse.values, dtype=float, copy=True)
+        xv, yv = coarse.create_vectors()
+        pasted = False
+        for finer in list_of_grids[idx1 + 1:]:
+            fx0, fx1, fy0, fy1 = finer.bbox
+            dxc = float(coarse.dx)
+            dyc = float(getattr(coarse, "dy", coarse.dx) or coarse.dx)
+            inx = np.where((xv >= fx0 - dxc) & (xv <= fx1 + dxc))[0]
+            iny = np.where((yv >= fy0 - dyc) & (yv <= fy1 + dyc))[0]
+            if not len(inx) or not len(iny):
+                continue
+            X, Y = np.meshgrid(xv[inx], yv[iny], indexing="ij")
             finer.extrapolate = False
-            new_coarse = finer.blend_into(
-                new_coarse, blend_width=_blend_width, p=p, nnear=nnear
+            finer.build_interpolant()
+            ht = finer.eval(
+                np.column_stack([X.ravel(), Y.ravel()])
+            ).reshape(X.shape)
+            inside = ((X >= fx0) & (X <= fx1)
+                      & (Y >= fy0) & (Y <= fy1))
+            ht = np.where(inside, ht, np.nan)
+            sub = vals[np.ix_(inx, iny)]
+            vals[np.ix_(inx, iny)] = np.where(
+                np.isfinite(ht), ht, sub
             )
-            new_coarse.extrapolate = True
-            new_coarse.build_interpolant()
-        # append it to list
-        new_list_of_grids.append(new_coarse)
+            finer.extrapolate = True
+            pasted = True
+        if pasted:
+            logger.info(
+                f"smooth_outer: relaxing outer sizing #{idx1} "
+                f"(grade {grads[idx1]})"
+            )
+            coarse.values = vals
+            limited = _limgrad_struct(
+                coarse, np.asarray(grads[idx1])
+            ).flatten("F")
+            coarse.values = np.reshape(
+                limited, coarse.values.shape, "F"
+            )
+        coarse.extrapolate = True
+        coarse.build_interpolant()
+        new_list_of_grids.append(coarse)
 
     list_of_grids[-1].extrapolate = True
-
-    # retain the finest
     new_list_of_grids.append(list_of_grids[-1])
 
-    # return the mesh size function to query during genertaion
-    # NB: only keep the minimum value over all grids
+    # query function: minimum over all nest grids (unchanged)
     def func(qpts):
         hmin = np.array([999999] * len(qpts))
-
         for i, grid in enumerate(new_list_of_grids):
             if i == 0:
                 grid.extrapolate = True
             else:
                 grid.extrapolate = False
             grid.build_interpolant()
-
             _hmin = grid.eval(qpts)
-
             hmin = np.min(np.column_stack([_hmin, hmin]), axis=1)
         return hmin
 

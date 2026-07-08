@@ -688,6 +688,7 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
     # meshes.
     ms_pfix = kwargs.pop("pfix", None)
     ms_egfix = kwargs.pop("egfix", None)
+    _ms_gradation = kwargs.pop("gradation", 0.15)
     _parse_kwargs(kwargs)
 
     # Build domain metadata for stereo/CRS awareness during blending
@@ -704,6 +705,7 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         nnear=opts["blend_nnear"],
         p=opts["blend_polynomial"],
         domain_metadata=domain_metadata,
+        gradation=_ms_gradation,
     )
 
     _sanitize_smoothed_sizing_grids(edge_lengths_smoothed)
