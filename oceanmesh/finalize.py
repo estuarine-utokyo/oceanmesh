@@ -371,11 +371,33 @@ def finalize_sizing(
     if courant is not None:
         if dem is None:
             raise ValueError("courant limiting needs dem")
+        _ts = float(courant.get("timestep", 0.0))
+        _cr_max = float(courant.get("max", 0.5))
+        if _ts == 0.0:
+            # edgefx.m:983-985 (audit P1-11): the automatic
+            # timestep uses the DISTANCE/feature field hh_d
+            # (the FIRST sizing function), floored at h0 — NOT
+            # the wl/CFL-combined grid
+            _feat = edge_lengths[0]
+            _hd = np.asarray(_feat.values, dtype=float) * factor
+            _hd = np.maximum(_hd, float(hmin) if hmin is not None
+                             else _hd.min())
+            _z = _dem_on_grid(_feat, dem)
+            _z = np.where(np.isfinite(_z), _z, 0.0)
+            _z = np.clip(_z, -11000.0, 11000.0)
+            _u = wave_celerity(
+                _z, wave_amplitude=float(
+                    courant.get("wave_amplitude", 1.0)))
+            _ts = float(np.nanmin(_cr_max * _hd / _u))
+            logger.info(
+                f"Automatic timestep from the distance field: "
+                f"dt = {_ts:.4f} s (Cr_max = {_cr_max})"
+            )
         grid, dt_eff = enforce_courant_bounds(
             grid, dem,
-            timestep=float(courant.get("timestep", 0.0)),
+            timestep=_ts,
             courant_min=courant.get("min"),
-            courant_max=float(courant.get("max", 0.5)),
+            courant_max=_cr_max,
             wave_amplitude=float(courant.get("wave_amplitude", 1.0)),
         )
 
