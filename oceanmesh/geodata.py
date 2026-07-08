@@ -714,6 +714,8 @@ def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False
     inner = np.empty(shape=(0, 2))
     mainland = np.empty(shape=(0, 2))
 
+    islands = []
+    main_parts = []
     for poly in _convert_to_list(polys):
         pts = poly[:-2, :]
         if len(pts) < 3:
@@ -722,11 +724,71 @@ def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False
         if inside.all():
             # wholly inside -> island (Read_shapefile.m:217-228)
             if abs(_poly_area(pts[:, 0], pts[:, 1])) >= _AREAMIN:
-                inner = np.append(inner, poly, axis=0)
+                islands.append(poly)
         else:
             # partially inside or outside -> mainland, kept WHOLE
             # (Read_shapefile.m:229-241; no geometric clipping)
-            mainland = np.vstack((mainland, poly))
+            main_parts.append(poly)
+
+    # Merge islands that OVERLAP the mainland (share >= 3 vertices
+    # at 1e-5 tolerance) into the mainland via polygon union,
+    # keeping holes (Read_shapefile.m:253-281: ismembertol +
+    # polyshape union). Overlapping rings double-count in the
+    # even-odd parity, flipping the overlap region to land.
+    if main_parts and islands:
+        main_vset = set()
+        for mp in main_parts:
+            fp = mp[~np.isnan(mp[:, 0])]
+            for r in np.round(fp / 1e-5).astype(np.int64):
+                main_vset.add((int(r[0]), int(r[1])))
+        merged_polys = []
+        keep_islands = []
+        for isl in islands:
+            fp = isl[~np.isnan(isl[:, 0])]
+            r = np.round(fp / 1e-5).astype(np.int64)
+            nshared = sum(
+                (int(a), int(b)) in main_vset for a, b in r
+            )
+            if nshared > 2:
+                merged_polys.append(fp)
+            else:
+                keep_islands.append(isl)
+        if merged_polys:
+            logger.info(
+                f"merging {len(merged_polys)} islands overlapping "
+                "the mainland (Read_shapefile.m:253-281)"
+            )
+            from shapely.ops import unary_union
+
+            geoms = []
+            for mp in main_parts:
+                fp = mp[~np.isnan(mp[:, 0])]
+                g = shapely.geometry.Polygon(fp)
+                if not g.is_valid:
+                    g = g.buffer(0)
+                geoms.append(g)
+            for fp in merged_polys:
+                g = shapely.geometry.Polygon(fp)
+                if not g.is_valid:
+                    g = g.buffer(0)
+                geoms.append(g)
+            u = unary_union(geoms)
+            if u.geom_type == "Polygon":
+                u = shapely.geometry.MultiPolygon([u])
+            main_parts = []
+            for g in u.geoms:
+                rings = [np.asarray(g.exterior.coords)]
+                rings += [np.asarray(i.coords) for i in g.interiors]
+                for rg in rings:
+                    main_parts.append(
+                        np.vstack((rg, [[nan, nan]]))
+                    )
+            islands = keep_islands
+
+    inner = (np.vstack(islands) if islands
+             else np.empty(shape=(0, 2)))
+    mainland = (np.vstack(main_parts) if main_parts
+                else np.empty(shape=(0, 2)))
 
     logger.debug("Exiting:classify_shoreline")
     return inner, mainland, ring
