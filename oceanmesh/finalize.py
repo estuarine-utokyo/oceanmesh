@@ -319,28 +319,27 @@ def finalize_sizing(
         grid.values = vals
 
     if weirs is not None:
-        # OM2D weir spacing override: inside a buffer around each
-        # crestline, cap h at k * crest spacing so the racetrack
-        # (built at that spacing) meets comparably sized elements
-        # and the across-crest node pairing stays clean.
-        import shapely
-        from shapely.geometry import LineString
+        # edgefx.m:803-833: densify each crestline at h0/2 and SET
+        # (hard override, not cap) hh = min_ele in a +-10-cell
+        # window around every crest point
+        from .weirs import _my_interpm
 
-        xg, yg = grid.create_grid()
-        pts = shapely.points(xg.ravel(), yg.ravel())
+        xvec, yvec = grid.create_vectors()
         vals = np.asarray(grid.values, dtype=float)
         for w in weirs:
             crest = np.asarray(w["crestline"], dtype=float)
             spacing = float(
-                w.get("spacing_m") or 2.0 * w["width_m"]
+                w.get("min_ele_m") or w.get("spacing_m")
+                or 2.0 * w["width_m"]
             ) / factor
-            k = float(w.get("k", 2.0))
-            d = shapely.distance(pts, LineString(crest)).reshape(
-                xg.shape
-            )
-            cap = k * spacing
-            vals = np.where(d < 4.0 * spacing,
-                            np.minimum(vals, cap), vals)
+            xy = _my_interpm(crest, 0.5 * float(grid.hmin))
+            for q in xy:
+                i = int(np.clip(np.searchsorted(xvec, q[0]), 0,
+                                len(xvec) - 1))
+                j = int(np.clip(np.searchsorted(yvec, q[1]), 0,
+                                len(yvec) - 1))
+                vals[max(0, i - 10):i + 11,
+                     max(0, j - 10):j + 11] = spacing
         grid.values = vals
 
     if hmin is not None:
