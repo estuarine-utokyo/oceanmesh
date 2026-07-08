@@ -709,57 +709,116 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
     )
 
     _sanitize_smoothed_sizing_grids(edge_lengths_smoothed)
-    union, nests = multiscale_signed_distance_function(domains)
-    _p = []
-    global_minimum = 9999
-    for domain_number, (sdf, edge_length) in enumerate(
-        zip(nests, edge_lengths_smoothed)
-    ):
-        logger.info(f"--> Building domain #{domain_number}")
-        global_minimum = np.amin([global_minimum, edge_length.hmin])
-        # Use the domain's own stereo flag (global first domain may be stereo=True)
-        _nest_kw = dict(kwargs)
-        # blend_into propagates the FINE grid's hmin into the
-        # blended coarse grid; without an explicit per-nest
-        # min_edge_length the outer nest seeds initial points at
-        # the FINEST spacing over its whole (huge) bbox — for a
-        # W-Pacific nest at 100 m that is ~4e9 points (OOM/SIGKILL)
-        _nest_kw.setdefault(
-            "min_edge_length", edge_lengths[domain_number].hmin
-        )
-        if domain_number == 0 and ms_pfix is not None:
-            _nest_kw["pfix"] = ms_pfix
-            if ms_egfix is not None:
-                _nest_kw["egfix"] = ms_egfix
-        _tmpp, _ = generate_mesh(
-            sdf,
-            edge_length,
-            stereo=getattr(domains[domain_number], "stereo", False),
-            **_nest_kw,
-        )
-        _p.append(_tmpp)
 
-    _p = np.concatenate(_p, axis=0)
+    # ---- OM2D single-loop multiscale (meshgen.m) -----------------
+    # One distmesh loop over ALL nests: composite fd assigns each
+    # point the sdf of the DEEPEST box containing it (dpoly.m box
+    # loop); composite fh evaluates bar midpoints with the deepest
+    # box's (smooth_outer-relaxed) sizing; seeding runs per box
+    # with each box's own h0 anchor, excluding deeper-box regions
+    # (meshgen.m:664-748). No inter-nest merge pass exists in the
+    # .m (split_bars.m is dead code there).
+    grids = edge_lengths_smoothed
+    boxes = [g.bbox for g in grids]
+    h0s = np.array([float(g.hmin) for g in grids])
 
-    # merge the two domains together
-    logger.info("--> Blending the domains together...")
-    # Avoid passing duplicate max_iter to generate_mesh
+    from . import edges as _om_edges
+    from .geometry import inpoly2 as _inpoly2
+
+    _rings = [getattr(d, "boubox_ring", None) for d in domains]
+
+    def _in_region(q, k):
+        # dpoly.m membership: inpoly against the box's boubox ring
+        # (polygon nests); rectangle fallback when no ring is
+        # attached (create_bbox domains)
+        ring = _rings[k]
+        if ring is not None and len(ring) > 3:
+            part = np.vstack([np.asarray(ring, float),
+                              [[np.nan, np.nan]]])
+            e = _om_edges.get_poly_edges(part)
+            ins, _ = _inpoly2(q, np.nan_to_num(part), e)
+            return ins
+        x0, x1, y0, y1 = boxes[k]
+        return ((q[:, 0] >= x0) & (q[:, 0] <= x1)
+                & (q[:, 1] >= y0) & (q[:, 1] <= y1))
+
+    for g in grids:
+        g.extrapolate = True
+        g.build_interpolant()
+
+    def fh_comp(q):
+        q = np.asarray(q, dtype=float)
+        v = grids[0].eval(q)
+        for k in range(1, len(grids)):
+            m = _in_region(q, k)
+            if m.any():
+                v[m] = grids[k].eval(q[m])
+        return v
+
+    def fd_comp(q):
+        q = np.asarray(q, dtype=float)
+        d = np.full(len(q), 1.0)
+        for k in range(len(domains)):
+            m = _in_region(q, k)
+            for kd in range(k + 1, len(domains)):
+                m &= ~_in_region(q, kd)
+            if m.any():
+                d[m] = domains[k].eval(q[m])
+        return d
+
+    # per-box equilateral seeding (meshgen.m:664-748)
+    geps_ms = 1e-12 * float(np.amin(h0s))
+    rng_pts = []
+    for k, (dom, g) in enumerate(zip(domains, grids)):
+        x0, x1, y0, y1 = boxes[k]
+        h = h0s[k]
+        dxs = 2.0 / np.sqrt(3.0) * h
+        ys = np.arange(y0, y1 + h, h)
+        rows = []
+        for i, yv in enumerate(ys):
+            xs = np.arange(x0 + (0.5 * dxs if i % 2 else 0.0),
+                           x1 + dxs, dxs)
+            rows.append(np.column_stack(
+                [xs, np.full(len(xs), yv)]))
+        p1 = np.vstack(rows)
+        # exclude deeper-box regions (they seed themselves finer)
+        excl = np.zeros(len(p1), dtype=bool)
+        for kd in range(k + 1, len(domains)):
+            excl |= _in_region(p1, kd)
+        p1 = p1[~excl]
+        p1 = p1[dom.eval(p1) < geps_ms]
+        r0 = np.asarray(g.eval(p1), dtype=float)
+        keep = np.random.rand(len(p1)) < (h / r0) ** 2
+        p1 = p1[keep]
+        logger.info(f"nest #{k}: seeded {len(p1)} points (h0={h})")
+        rng_pts.append(p1)
+        if k == 0:
+            ring = getattr(dom, "boubox_ring", None)
+            if ring is not None and len(ring):
+                ring = np.asarray(ring, dtype=float)
+                ring = ring[fd_comp(ring) < geps_ms]
+                if len(ring):
+                    r0 = np.asarray(g.eval(ring), dtype=float)
+                    keep = np.random.rand(len(ring)) < (h / r0) ** 2
+                    rng_pts.append(ring[keep])
+    p0 = np.vstack(rng_pts)
+    logger.info(f"single-loop multiscale: {len(p0)} initial points")
+
     _kwargs = dict(kwargs)
-    _kwargs.pop("max_iter", None)
-    # If union is global stereo, ensure stereo flag passed to final blending mesh generation
-    if getattr(union, "stereo", False):
-        _kwargs["stereo"] = True
     if ms_pfix is not None:
         _kwargs["pfix"] = ms_pfix
         if ms_egfix is not None:
             _kwargs["egfix"] = ms_egfix
+    _union_bbox = (min(b[0] for b in boxes),
+                   max(b[1] for b in boxes),
+                   min(b[2] for b in boxes),
+                   max(b[3] for b in boxes))
     _p, _t = generate_mesh(
-        domain=union,
-        edge_length=master_edge_length,
-        min_edge_length=global_minimum,
-        points=_p,
-        max_iter=opts["blend_max_iter"],
-        lock_boundary=True,
+        domain=fd_comp,
+        edge_length=fh_comp,
+        bbox=_union_bbox,
+        min_edge_length=h0s,
+        points=p0,
         **_kwargs,
     )
 
@@ -842,7 +901,9 @@ def generate_mesh(domain, edge_length, **kwargs):
     _check_bbox(bbox)
     bbox = np.array(bbox).reshape(-1, 2)
 
-    assert min_edge_length > 0, "`min_edge_length` must be > 0"
+    assert np.all(np.asarray(min_edge_length) > 0), (
+        "`min_edge_length` must be > 0"
+    )
 
     assert opts["max_iter"] > 0, "`max_iter` must be > 0"
     max_iter = opts["max_iter"]
@@ -984,7 +1045,9 @@ def generate_mesh(domain, edge_length, **kwargs):
                     f"seeded {int(keep.sum())} domain-outline points"
                 )
     else:
-        p = opts["points"]
+        # opts["points"] are projected in the tmerc block above
+        # (line ~1000); do NOT project twice
+        p = np.asarray(opts["points"], dtype=float)
 
     N = p.shape[0]
 
