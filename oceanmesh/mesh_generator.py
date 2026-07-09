@@ -295,6 +295,7 @@ def _parse_kwargs(kwargs):
             "min_edge_length",
             "plot",
             "blend_width",
+        "enforce_min",
             "blend_polynomial",
             "blend_max_iter",
             "blend_nnear",
