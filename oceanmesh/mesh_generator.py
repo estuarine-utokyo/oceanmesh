@@ -1150,9 +1150,10 @@ def generate_mesh(domain, edge_length, **kwargs):
 
         fixed_indices = []
         if lock_boundary:
-            _, bpts = _external_topology(p, t)
-            for fix in bpts:
-                fixed_indices.append(_closest_node(fix, p))
+            _bedges, _ = _external_topology(p, t)
+            fixed_indices = np.unique(
+                np.asarray(_bedges, dtype=int).reshape(-1)
+            ).tolist()
 
         if len(pfix) > 0:
             p[:len(pfix)] = pfix
@@ -1432,10 +1433,14 @@ def _improve_points(p, t, fh, fd, geps, pfix, lock_boundary,
     n0 = len(p)
     protected = set()
     protected.update(range(len(pfix)))
-    _, bpts = _external_topology(p, t)
+    # boundary_edges already hold vertex INDICES — recovering them
+    # via per-point _closest_node scans was O(B*N) (67+ min at
+    # NP=4.8M on Example_4) and wrong under exact-duplicate points
+    _bedges, _ = _external_topology(p, t)
     bnd_protected = set(protected)
-    for b in bpts:
-        bnd_protected.add(_closest_node(b, p))
+    bnd_protected.update(
+        np.unique(np.asarray(_bedges, dtype=int).reshape(-1)).tolist()
+    )
 
     conn = np.bincount(t.ravel(), minlength=len(p))
     low = {int(v) for v in np.where(conn <= 4)[0]
