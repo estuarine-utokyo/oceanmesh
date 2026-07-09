@@ -246,7 +246,7 @@ def signed_distance_function(shoreline, invert=False):
             ish, _ = inpoly2(x_f, np.nan_to_num(poly), e)
             in_shoreline[finite_mask] = ish
             # compute distance to shoreline for finite points
-            d_f, _ = tree.query(x_f, k=1)
+            d_f, _ = tree.query(x_f, k=1, workers=-1)
             d[finite_mask] = d_f
 
         # Signed distance: negative inside intersection of boubox and shoreline
@@ -293,7 +293,7 @@ def signed_distance_function(shoreline, invert=False):
             x_f = x[finite_mask]
             in_boubox[finite_mask] = _sh.contains_xy(
                 _pg, x_f[:, 0], x_f[:, 1])
-            d_f, _ = tree2.query(x_f, k=1)
+            d_f, _ = tree2.query(x_f, k=1, workers=-1)
             d[finite_mask] = d_f
 
         dist = ((-1) ** (in_boubox)) * d
