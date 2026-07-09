@@ -1167,6 +1167,7 @@ def multiscale_sizing_function(
     p=3,
     nnear=28,
     blend_width=1000,
+    enforce_min=True,
     domain_metadata=None,
     gradation=0.15,
 ):
@@ -1196,6 +1197,32 @@ def multiscale_sizing_function(
     err = "grid objects must appear in order of descending dx spacing"
     for i, grid in enumerate(list_of_grids[:-1]):
         assert grid.dx >= list_of_grids[i + 1].dx, err
+
+    # enforce_min_ef.m (meshgen.m:391, default enforceMin=1): each
+    # FINER grid's values are capped by every COARSER grid's values
+    # on their overlap, BEFORE smooth_outer. A no-op for strictly
+    # nested finer-inside-coarser fields; decisive when an outer
+    # field is locally finer (e.g. Example_9 channels).
+    if enforce_min:
+        for kk in range(len(list_of_grids) - 1, 0, -1):
+            fine = list_of_grids[kk]
+            fx, fy = fine.create_grid()
+            fpts = np.column_stack([fx.ravel(), fy.ravel()])
+            for ii in range(kk):
+                low = list_of_grids[ii]
+                bb = low.bbox
+                m = ((fpts[:, 0] >= bb[0]) & (fpts[:, 0] <= bb[1])
+                     & (fpts[:, 1] >= bb[2]) & (fpts[:, 1] <= bb[3]))
+                if not m.any():
+                    continue
+                lv = low.eval(fpts[m])
+                fv = fine.values.ravel()
+                sel = np.where(m)[0]
+                _mask = fv[sel] > lv
+                if _mask.any():
+                    fv[sel[_mask]] = lv[_mask]
+                    fine.values = fv.reshape(fine.values.shape)
+            fine.build_interpolant()
 
     # smooth_outer.m semantics (meshgen.m:394): PASTE each finer
     # nest's values onto the coarse lattice (masked to the finer

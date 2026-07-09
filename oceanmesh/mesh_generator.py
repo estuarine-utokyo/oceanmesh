@@ -706,6 +706,7 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         p=opts["blend_polynomial"],
         domain_metadata=domain_metadata,
         gradation=_ms_gradation,
+        enforce_min=bool(kwargs.get("enforce_min", True)),
     )
 
     _sanitize_smoothed_sizing_grids(edge_lengths_smoothed)
