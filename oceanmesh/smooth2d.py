@@ -27,7 +27,14 @@ def _tricon2(tria):
     of adjacent triangles (edge 'degree'; 1 = boundary edge)."""
     e = np.vstack([tria[:, [0, 1]], tria[:, [1, 2]], tria[:, [2, 0]]])
     e = np.sort(e, axis=1)
-    edge, counts = np.unique(e, axis=0, return_counts=True)
+    # int64-key encoding: identical lexicographic order/counts as
+    # np.unique(axis=0) but ~10x faster (axis-unique's structured
+    # sort took minutes per call at 28M edge rows, dominating
+    # smooth2d on multi-million-node meshes)
+    n = np.int64(e.max()) + 1
+    key = e[:, 0].astype(np.int64) * n + e[:, 1].astype(np.int64)
+    uk, counts = np.unique(key, return_counts=True)
+    edge = np.column_stack([uk // n, uk % n]).astype(tria.dtype)
     return edge, counts
 
 
