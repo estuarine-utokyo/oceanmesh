@@ -1130,9 +1130,21 @@ def channel_sizing_function(
     tanre = np.tan(np.deg2rad(angle_of_reslope))
     nx, ny = xg.shape
     x0, y0 = xg[0, 0], yg[0, 0]
+    bb = grid.bbox
     for poly in channels:
         poly = np.asarray(poly, dtype=float)
         if poly.ndim != 2 or len(poly) == 0:
+            continue
+        # thalweg arrays may carry NaN separators; keep only
+        # finite points inside the sizing bbox (chfx inpoly gate)
+        fin = np.isfinite(poly).all(axis=1)
+        poly = poly[fin]
+        if len(poly) == 0:
+            continue
+        inb = ((poly[:, 0] >= bb[0]) & (poly[:, 0] <= bb[1])
+               & (poly[:, 1] >= bb[2]) & (poly[:, 1] <= bb[3]))
+        poly = poly[inb]
+        if len(poly) == 0:
             continue
         z = np.asarray(dem.eval(poly), dtype=float)
         dp = np.maximum(1.0, -z)
