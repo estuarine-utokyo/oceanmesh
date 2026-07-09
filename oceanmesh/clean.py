@@ -126,6 +126,9 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             bad = touching & (q < min_qual_bound)
             if not bad.any():
                 break
+            logger.info(
+                f"Deleted {int(bad.sum())} bad boundary elements"
+            )
             faces = faces[~bad]
             vertices, faces, _ = fix_mesh(vertices, faces,
                                           delete_unused=True)
