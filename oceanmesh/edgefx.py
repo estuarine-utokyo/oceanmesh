@@ -1101,6 +1101,7 @@ def channel_sizing_function(
     min_edge_length=None,
     max_edge_length=None,
     crs="EPSG:4326",
+    dx=None,
 ):
     """Port of OceanMesh2D edgefx ``ch`` (chfx): resolve channels /
     thalwegs. For every channel point the local channel half-width
@@ -1112,10 +1113,15 @@ def channel_sizing_function(
     from a flow-accumulation extraction), in the DEM's CRS.
     """
     logger.info("Building a channel sizing function...")
+    # chfx paints on the EDGEFX h0 lattice (edgefx.m:658
+    # CreateStructGrid), not the DEM raster — painting on a coarse
+    # DEM cell widens every channel footprint by dem.dx/h0 (4.6x on
+    # Example_9: SRTM 15 arcsec vs h0=100 m -> NP +98%)
+    _dx = dem.dx if dx is None else dx
     grid = Grid(
         bbox=dem.bbox,
-        dx=dem.dx,
-        dy=dem.dy,
+        dx=_dx,
+        dy=_dx if dx is not None else dem.dy,
         extrapolate=True,
         hmin=min_edge_length,
         crs=crs,
