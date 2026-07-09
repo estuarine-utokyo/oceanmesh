@@ -55,10 +55,13 @@ def elevation_bands(param, elevation, default=np.nan):
 
 
 def wave_celerity(depth, wave_amplitude=1.0):
-    """OM2D wave speed: ``sqrt(g*|z|) + amp*sqrt(g/|z|)`` with depth
-    floored at 1 m (the second term is the orbital velocity of a
-    ``wave_amplitude``-metre wave)."""
-    d = np.maximum(np.abs(depth), 1.0)
+    """OM2D wave speed: ``sqrt(g*|z|) + amp*sqrt(g/|z|)`` after the
+    SIGNED clamp ``tmpz(tmpz > -1) = -1`` (edgefx.m:940-941): land
+    and shallows become 1 m water. ``abs()`` alone turned mountain
+    cells into kilometre-deep water (u ~70 m/s on Puerto Rico ->
+    auto-dt 0.22 s vs OM2D 1.26 s)."""
+    z = np.where(np.asarray(depth) > -1.0, -1.0, depth)
+    d = np.abs(z)
     return np.sqrt(GRAV * d) + wave_amplitude * np.sqrt(GRAV / d)
 
 
