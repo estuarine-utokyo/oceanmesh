@@ -507,29 +507,24 @@ def bathymetric_gradient_sizing_function(
             - 0.0023 * np.cos(6 * np.radians(lat0))
         )
         meters_per_deg_lon = 111320.0 * np.cos(np.radians(lat0))
-        dx_deg, dy_deg = dx, dy
         dx *= meters_per_deg_lon
         dy *= meters_per_deg_lat
-    else:
-        dx_deg, dy_deg = dx, dy
+    # edgefx.m slpfx is METRE-consistent throughout (dx =
+    # h0*cosd(lat) metres feeds both filt2 and EarthGradient);
+    # rossby_radius_filter derives its block dxx from dy*cos(lat)
+    # internally, so it must receive the METRIC spacings
     grid_details = (nx, ny, dx, dy)
-    # the Rossby filter compares its dy against dxx taken from the
-    # raw coordinate arrays (degrees) — edgefx.m works in degrees
-    # throughout here. Passing the metre-scaled dy made
-    # sigma = (dy_m*mult/dx_deg)/2pi ~ 7e4 CELLS (should be
-    # mult/2pi), i.e. a ~370k-tap kernel: hours per class, OOM.
-    grid_details_deg = (nx, ny, dx_deg, dy_deg)
 
     if type_of_filter == "barotropic" and filter_quotient > 0:
         logger.info("Baroptropic Rossby radius calculation...")
         bs, time_taken = rossby_radius_filter(
-            tmpz, dem.bbox, grid_details_deg, coords, filter_quotient, True
+            tmpz, dem.bbox, grid_details, coords, filter_quotient, True
         )
 
     elif type_of_filter == "baroclinic" and filter_quotient > 0:
         logger.info("Baroclinic Rossby radius calculation...")
         bs, time_taken = rossby_radius_filter(
-            tmpz, dem.bbox, grid_details_deg, coords, filter_quotient, False
+            tmpz, dem.bbox, grid_details, coords, filter_quotient, False
         )
     elif "pass" in type_of_filter:
         logger.info(f"Using a {type_of_filter} filter...")
@@ -678,7 +673,10 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
         # first-baroclinic Rossby radius of deformation. J. Phys. Oceanogr.,
         # 28, 433-460.
         ygg = yg[:, n2s:n2e]
-        dxx = np.mean(np.diff(xg[n2s:n2e, 0]))
+        # edgefx.m:518: dxx = mean(dx(n2s:n2e)) with
+        # dx = h0*cosd(lat) in METRES — the block-mean METRIC
+        # x-spacing, NOT a degree spacing from the coord array
+        dxx = dy * float(np.cos(np.radians(np.mean(ygg))))
         f = 2 * Rre * abs(np.sin(ygg * np.pi / 180))
         if barot:
             # Barotropic case
