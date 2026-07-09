@@ -872,6 +872,9 @@ def feature_sizing_function(
         x, y = _trm.transform(q[:, 0], q[:, 1])
         return np.column_stack([x, y])
 
+    import time as _tm
+
+    _tfs = _tm.time()
     h0_m = h0 * 111e3
     qpts_m = _to_m(qpts)
     land_pts = [
@@ -883,7 +886,13 @@ def feature_sizing_function(
         land = np.vstack(land_pts)
         land = land[~np.isnan(land[:, 0])]
         ltree = scipy.spatial.cKDTree(_to_m(land))
+        logger.info(
+            f"feature: land tree ({len(land):,} pts) "
+            f"+{_tm.time()-_tfs:.0f}s")
         dist_land, _ = ltree.query(qpts_m, k=1, workers=-1)
+        logger.info(
+            f"feature: land KD query ({len(qpts_m):,} qpts) "
+            f"+{_tm.time()-_tfs:.0f}s")
         sgn = np.where(
             signed_distance_function.eval(qpts) < 0, -1.0, 1.0
         )
@@ -928,6 +937,9 @@ def feature_sizing_function(
     medial_points = np.column_stack(
         (lon[medial_mask], lat[medial_mask])
     )
+    logger.info(
+        f"feature: medial census {len(medial_points):,} "
+        f"+{_tm.time()-_tfs:.0f}s")
 
     # continuity prune (edgefx.m:345-355): require ~a line of medial
     # points — 2nd/3rd/4th neighbours within co, 2co, 3co * h0
@@ -942,6 +954,9 @@ def feature_sizing_function(
             | (dmed[:, 3] > 3 * co * h0_m)
         )
         medial_points = medial_points[~prune]
+        logger.info(
+            f"feature: pruned to {len(medial_points):,} "
+            f"+{_tm.time()-_tfs:.0f}s")
 
     if len(medial_points) <= 12:
         # OM2D fallback: no reliable medial axis -> distance grading
@@ -953,6 +968,8 @@ def feature_sizing_function(
         tree = scipy.spatial.cKDTree(_to_m(medial_points))
         dMA, _ = tree.query(qpts_m, k=1, workers=-1)
         dMA = dMA.reshape(lon.shape)
+        logger.info(
+            f"feature: dPOS query done +{_tm.time()-_tfs:.0f}s")
         W = (dMA + np.abs(d)) / 111e3  # back to degree units
         if r < 0:
             # OM2D automatic mode (fs < 0): cap the element count
