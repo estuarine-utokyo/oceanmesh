@@ -379,7 +379,9 @@ def finalize_sizing(
             # (the FIRST sizing function), floored at h0 — NOT
             # the wl/CFL-combined grid
             _feat = edge_lengths[0]
-            _hd = np.asarray(_feat.values, dtype=float) * factor
+            _hd = np.asarray(
+                getattr(_feat, "values_raw", _feat.values),
+                dtype=float) * factor
             _hd = np.maximum(_hd, float(hmin) if hmin is not None
                              else _hd.min())
             _z = _dem_on_grid(_feat, dem)

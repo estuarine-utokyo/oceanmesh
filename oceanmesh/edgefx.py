@@ -983,6 +983,12 @@ def feature_sizing_function(
     grid = grid_calc.interpolate_to(grid)
     if min_edge_length is not None:
         grid.values[grid.values < min_edge_length] = min_edge_length
+    # keep the UNCAPPED feature field for the automatic
+    # timestep: edgefx.m:983 takes hh_d from the raw fsd
+    # (2W/fs) BEFORE the max_el cap (Example_4: capped-first
+    # gave dt 1.52 s vs OM2D 7.30 s -> weak CFL floor -> 12.5M
+    # seeds where OM2D places ~4M)
+    grid.values_raw = np.array(grid.values)
     if max_edge_length is not None:
         grid.values[grid.values > max_edge_length] = max_edge_length
 
