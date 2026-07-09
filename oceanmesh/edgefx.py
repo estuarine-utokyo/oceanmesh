@@ -507,20 +507,29 @@ def bathymetric_gradient_sizing_function(
             - 0.0023 * np.cos(6 * np.radians(lat0))
         )
         meters_per_deg_lon = 111320.0 * np.cos(np.radians(lat0))
+        dx_deg, dy_deg = dx, dy
         dx *= meters_per_deg_lon
         dy *= meters_per_deg_lat
+    else:
+        dx_deg, dy_deg = dx, dy
     grid_details = (nx, ny, dx, dy)
+    # the Rossby filter compares its dy against dxx taken from the
+    # raw coordinate arrays (degrees) — edgefx.m works in degrees
+    # throughout here. Passing the metre-scaled dy made
+    # sigma = (dy_m*mult/dx_deg)/2pi ~ 7e4 CELLS (should be
+    # mult/2pi), i.e. a ~370k-tap kernel: hours per class, OOM.
+    grid_details_deg = (nx, ny, dx_deg, dy_deg)
 
     if type_of_filter == "barotropic" and filter_quotient > 0:
         logger.info("Baroptropic Rossby radius calculation...")
         bs, time_taken = rossby_radius_filter(
-            tmpz, dem.bbox, grid_details, coords, filter_quotient, True
+            tmpz, dem.bbox, grid_details_deg, coords, filter_quotient, True
         )
 
     elif type_of_filter == "baroclinic" and filter_quotient > 0:
         logger.info("Baroclinic Rossby radius calculation...")
         bs, time_taken = rossby_radius_filter(
-            tmpz, dem.bbox, grid_details, coords, filter_quotient, False
+            tmpz, dem.bbox, grid_details_deg, coords, filter_quotient, False
         )
     elif "pass" in type_of_filter:
         logger.info(f"Using a {type_of_filter} filter...")
@@ -697,6 +706,9 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
         for i in range(len(edges)):
             if edges[i] > 0:
                 mult = 2 ** edges[i]
+                import time as _tm
+
+                _tcls0 = _tm.time()
                 logger.info(
                     f"Rossby filter: block {jj+1}/"
                     f"{number_of_blocks} class 2^{int(edges[i])}"
@@ -746,6 +758,11 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
                 r0 = int(np.where(xr.ravel() == 0)[0][0])
                 c0 = int(np.where(yr.ravel() == n2s)[0][0])
                 tmpz_ft = tmpz_ft[r0:r0 + nx, c0:c0 + (n2e - n2s)]
+                logger.info(
+                    f"  class 2^{int(edges[i])} region "
+                    f"{int(xr.size)}x{int(yr.size)} took "
+                    f"{_tm.time()-_tcls0:.1f}s"
+                )
 
             else:
                 tmpz_ft = tmpz[:, n2s:n2e]
