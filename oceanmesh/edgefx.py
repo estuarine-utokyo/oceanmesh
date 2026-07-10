@@ -1193,7 +1193,9 @@ def channel_sizing_function(
         if len(poly) == 0:
             continue
         z = np.asarray(dem.eval(poly), dtype=float)
-        _zfin = np.isfinite(z)
+        # nodata may surface as a large fill value (Galveston nc:
+        # 999999.0), not NaN — no real elevation exceeds 20 km
+        _zfin = np.isfinite(z) & (np.abs(z) < 2.0e4)
         poly, z = poly[_zfin], z[_zfin]
         if len(poly) == 0:
             continue
@@ -1215,7 +1217,8 @@ def channel_sizing_function(
             dpc = np.maximum(1.0, -zc)
             hs = np.maximum(dpc / ch,
                             min_edge_length_channel) / m_per_unit
-            hs = np.where(np.isfinite(zc), hs, np.nan)
+            hs = np.where(np.isfinite(zc) & (np.abs(zc) < 2.0e4),
+                          hs, np.nan)
             hs = hs.reshape(i1 - i0, j1 - j0)
             blk = values[i0:i1, j0:j1]
             both = ~np.isnan(hs)
