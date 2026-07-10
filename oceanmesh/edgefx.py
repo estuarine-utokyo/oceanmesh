@@ -549,22 +549,35 @@ def bathymetric_gradient_sizing_function(
     if grid_dx is not None:
         if coarsen != 1:
             raise ValueError("grid_dx and coarsen are mutually exclusive")
-        # geodata.m ParseDEM DECIMATES the DEM by an integer stride
-        # to match h0 ("DEM will be downsampled by a stride of N");
-        # every .m sizing raster then keeps the full sub-cell
-        # gradient variance. Bilinear resampling at the lattice
-        # points instead SMOOTHS the bathymetry and sat ~10% coarse
-        # across the whole gradient-driven band on Example_7.
-        sx = max(1, int(round(float(grid_dx) / float(dem.dx))))
-        sy = max(1, int(round(float(grid_dx) / float(dem.dy))))
-        logger.info("grid_dx: decimating DEM by strides (%d, %d)", sx, sy)
+        # Two-stage sampling, exactly as the .m: geodata.m ParseDEM
+        # DECIMATES the DEM by ceil(h0/dem_dx) ("DEM will be
+        # downsampled by a stride of N"), then edgefx builds its
+        # raster on the h0 lattice (CreateStructGrid) and evaluates
+        # the decimated DEM's LINEAR interpolant onto it. Both
+        # single-stage variants fail Example_7's golden field:
+        # direct bilinear from the native DEM over-smooths (+12%
+        # coarse in the 10-19 km band) and pure decimation keeps
+        # too much gradient variance (-7% fine).
+        sx = max(1, int(np.ceil(float(grid_dx) / float(dem.dx))))
+        sy = max(1, int(np.ceil(float(grid_dx) / float(dem.dy))))
+        logger.info(
+            "grid_dx: DEM decimated by strides (%d, %d), then "
+            "resampled onto the h0 lattice", sx, sy)
         xv, yv = dem.create_vectors()
-        xg, yg = np.meshgrid(xv[::sx], yv[::sy], indexing="ij")
-        # copy: the clamp below must not write through the view
-        # into dem.values
-        tmpz = np.asarray(dem.values, dtype=float)[::sx, ::sy].copy()
-        _gdx = sx * float(dem.dx)  # exact raster spacings
-        _gdy = sy * float(dem.dy)
+        zdec = np.asarray(dem.values, dtype=float)[::sx, ::sy]
+        _slpg = Grid(
+            bbox=dem.bbox, dx=float(grid_dx), extrapolate=True,
+            values=0.0, crs=dem.crs
+        )
+        xg, yg = _slpg.create_grid()
+        from scipy.interpolate import RegularGridInterpolator
+
+        _F = RegularGridInterpolator(
+            (xv[::sx], yv[::sy]), zdec, method="linear",
+            bounds_error=False, fill_value=None,
+        )
+        tmpz = np.asarray(_F((xg, yg)), dtype=float)
+        _gdx = _gdy = float(grid_dx)  # h0 spacing (edgefx.m:458-459)
     else:
         xg, yg = dem.create_grid()
         tmpz = dem.eval((xg, yg)).astype(float)
@@ -606,7 +619,10 @@ def bathymetric_gradient_sizing_function(
         # continental slopes: the slope sizing sat 33% coarser than
         # the .m over the shelf-slope band on Example_7.
         lat_rows = yg[0, :]
-        dx = dx * 111320.0 * np.cos(np.radians(lat_rows))
+        # edgefx.m:458: cosd(min(lat, 85)) — polar clip
+        dx = dx * 111320.0 * np.cos(
+            np.radians(np.minimum(np.abs(lat_rows), 85.0))
+        )
         dy *= meters_per_deg_lat
     # edgefx.m slpfx is METRE-consistent throughout (dx =
     # h0*cosd(lat) metres feeds both filt2 and EarthGradient);
@@ -1155,17 +1171,24 @@ def wavelength_sizing_function(
     logger.info("Building a wavelength sizing function...")
 
     if grid_dx is not None:
-        # geodata.m ParseDEM decimates the DEM by an integer stride
-        # to match h0; rasterising at native DEM resolution explodes
-        # on basin/global DEMs (SRTM15+ global: 3.7e9 cells -> OOM).
-        # Same stride mechanism as bathymetric_gradient_sizing_function.
-        _sx = max(1, int(round(float(grid_dx) / float(dem.dx))))
-        _sy = max(1, int(round(float(grid_dx) / float(dem.dy))))
+        # Two-stage sampling as the .m (ParseDEM stride decimation,
+        # then the h0 lattice samples the decimated interpolant) —
+        # same mechanism as bathymetric_gradient_sizing_function.
+        _sx = max(1, int(np.ceil(float(grid_dx) / float(dem.dx))))
+        _sy = max(1, int(np.ceil(float(grid_dx) / float(dem.dy))))
         _xv, _yv = dem.create_vectors()
-        lon, lat = np.meshgrid(_xv[::_sx], _yv[::_sy], indexing="ij")
-        tmpz = np.asarray(dem.values, dtype=float)[::_sx, ::_sy].copy()
-        _gdx = _sx * float(dem.dx)
-        _gdy = _sy * float(dem.dy)
+        _zdec = np.asarray(dem.values, dtype=float)[::_sx, ::_sy]
+        _wlg = Grid(bbox=dem.bbox, dx=float(grid_dx),
+                    extrapolate=True, values=0.0, crs=crs)
+        lon, lat = _wlg.create_grid()
+        from scipy.interpolate import RegularGridInterpolator
+
+        _Fw = RegularGridInterpolator(
+            (_xv[::_sx], _yv[::_sy]), _zdec, method="linear",
+            bounds_error=False, fill_value=None,
+        )
+        tmpz = np.asarray(_Fw((lon, lat)), dtype=float)
+        _gdx = _gdy = float(grid_dx)
     else:
         lon, lat = dem.create_grid()
         tmpz = dem.eval((lon, lat))
