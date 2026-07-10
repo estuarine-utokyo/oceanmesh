@@ -1627,17 +1627,26 @@ class Shoreline(Region):
                 _hits.append(360.0)
             for _shift in _hits:
                 if g.geom_type == "LineString":
-                    poly = np.asarray(g.coords)
+                    rings = [np.asarray(g.coords)]
                 elif g.geom_type == "Polygon":  # a polygon
-                    poly = np.asarray(g.exterior.coords.xy).T
+                    # shapefiles store every ring as its own part;
+                    # dropping interior rings (holes) collapses
+                    # water bodies enclosed by land polygons onto
+                    # the land parity (Example_6 US Medium
+                    # Shoreline: tidal creeks read as DRY, medial
+                    # census -3.4k, transition bands halved)
+                    rings = [np.asarray(g.exterior.coords.xy).T]
+                    for _hole in g.interiors:
+                        rings.append(np.asarray(_hole.coords.xy).T)
                 else:
                     raise ValueError(f"Unsupported geometry type: {g.geom_type}")
 
-                poly = remove_dup(poly)
-                if _shift:
-                    poly = poly.copy()
-                    poly[:, 0] += _shift
-                polys.append(np.vstack((poly, delimiter)))
+                for poly in rings:
+                    poly = remove_dup(poly)
+                    if _shift:
+                        poly = poly.copy()
+                        poly[:, 0] += _shift
+                    polys.append(np.vstack((poly, delimiter)))
 
         if len(polys) == 0:
             cur_crs = None
