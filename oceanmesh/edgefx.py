@@ -1072,6 +1072,7 @@ def wavelength_sizing_function(
     period=12.42 * 3600,  # M2 period in seconds
     gravity=9.81,  # m/s^2
     crs="EPSG:4326",
+    grid_dx=None,
 ):
     """Mesh sizes that vary proportional to an estimate of the wavelength
        of a period (default M2-period)
@@ -1104,7 +1105,16 @@ def wavelength_sizing_function(
     """
     logger.info("Building a wavelength sizing function...")
 
-    lon, lat = dem.create_grid()
+    if grid_dx is not None:
+        # edgefx.m builds ALL sizing rasters on the h0 lattice
+        # (CreateStructGrid) and samples the DEM interpolant onto
+        # it; rasterising at native DEM resolution explodes on
+        # basin/global DEMs (SRTM15+ global: 3.7e9 cells -> OOM)
+        _wlg = Grid(bbox=dem.bbox, dx=float(grid_dx),
+                    extrapolate=True, values=0.0, crs=crs)
+        lon, lat = _wlg.create_grid()
+    else:
+        lon, lat = dem.create_grid()
     tmpz = dem.eval((lon, lat))
 
     dx, dy = dem.dx, dem.dy  # for gradient function
