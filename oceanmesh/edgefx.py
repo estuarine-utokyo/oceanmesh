@@ -785,7 +785,10 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
         bst = rosb * 0
         for i in range(len(edges)):
             if edges[i] > 0:
-                mult = 2 ** edges[i]
+                # int: the wrap/mirror index arithmetic below feeds
+                # np.arange/np.concatenate(dtype=int) (same_kind
+                # casting rejects float64 -> int64)
+                mult = int(2 ** edges[i])
                 import time as _tm
 
                 _tcls0 = _tm.time()
@@ -797,26 +800,34 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
                 if ((np.max(xg) > 179 and np.min(xg) < -179)) or (
                     np.max(xg) > 359 and np.min(xg) < 1
                 ):
-                    # wraps around
+                    # wraps around — edgefx.m:549
+                    # xr = [nx-mult/2+1:nx, 1:nx, 1:mult/2] (1-based)
+                    # 0-based: last mult/2 cols + full body + first
+                    # mult/2 cols. The body MUST contain index 0: the
+                    # pad trim below locates it with xr == 0.
                     logger.info("wrapping around")
                     xr = np.concatenate(
                         [
-                            np.arange(nx - mult / 2, nx, 1),
-                            np.arange(xl, xu),
-                            np.arange(1, mult / 2),
+                            np.arange(nx - mult // 2, nx),
+                            np.arange(0, nx),
+                            np.arange(0, mult // 2),
                         ],
                         dtype=int,
                     )
                 else:
                     xr = np.arange(xl - 1, xu, dtype=int)
 
-                yl, yu = max(1, n2s - mult / 2), min(ny, n2e + mult / 2)
+                # edgefx.m:553-554 (1-based, n2s_ml = n2s+1, n2e_ml = n2e)
+                yl = max(1, n2s + 1 - mult // 2)
+                yu = min(ny, n2e + mult // 2)
                 if np.max(yg) > 89 and yu == ny:
-                    # create mirror around pole
+                    # create mirror around pole — edgefx.m:557
+                    # yr = [yl:yu, yu-1:-1:2*ny-n2e-mult/2] (1-based);
+                    # the reflection EXCLUDES the pole row itself
                     yr = np.concatenate(
                         [
-                            np.arange(yl, yu),
-                            np.arange(yu - 1, 2 * ny - n2e - mult / 2, -1),
+                            np.arange(yl - 1, yu),
+                            np.arange(yu - 2, 2 * ny - n2e - mult // 2 - 2, -1),
                         ],
                         dtype=int,
                     )
