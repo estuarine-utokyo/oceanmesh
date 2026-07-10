@@ -244,6 +244,10 @@ def signed_distance_function(shoreline, invert=False):
             in_boubox[finite_mask] = ib
             # are points inside the shoreline?
             ish, _ = inpoly2(x_f, np.nan_to_num(poly), e)
+            if getattr(shoreline, "inpoly_flip", False):
+                # geodata.m dpoly: (-1)^(~in) for water-polygon
+                # shapefiles (e.g. US Medium Shoreline)
+                ish = ~ish
             in_shoreline[finite_mask] = ish
             # compute distance to shoreline for finite points
             d_f, _ = tree.query(x_f, k=1, workers=-1)

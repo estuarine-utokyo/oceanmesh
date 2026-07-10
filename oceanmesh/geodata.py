@@ -1525,6 +1525,48 @@ class Shoreline(Region):
             gdf = gdf.to_crs(dst_crs)
         return gdf
 
+    def detect_inpoly_flip(self, reference_shp):
+        """geodata.m check_connectedness_inpoly (:660-680): sample
+        100 points along the bbox diagonal; if the parity under
+        this shapefile disagrees with the parity under a coarse
+        GSHHS reference (GSHHS_l_L1) for more than 50 of them, the
+        shapefile encodes WATER polygons — set inpoly_flip."""
+        from .geometry import inpoly2
+        from . import edges as _edges
+
+        _bb = self.bbox
+        if not isinstance(_bb, tuple):
+            _bb = (float(np.amin(self.bbox[:, 0])),
+                   float(np.amax(self.bbox[:, 0])),
+                   float(np.amin(self.bbox[:, 1])),
+                   float(np.amax(self.bbox[:, 1])))
+        xs = np.linspace(_bb[0], _bb[1], 100)
+        ys = np.linspace(_bb[2], _bb[3], 100)
+        pts = np.column_stack([xs, ys])
+
+        def _parity(mainland, inner):
+            parts = [np.asarray(a) for a in (mainland, inner)
+                     if a is not None and len(a)]
+            if not parts:
+                return np.zeros(len(pts), dtype=bool)
+            poly = np.vstack(parts)
+            e = _edges.get_poly_edges(poly)
+            ins, _ = inpoly2(pts, np.nan_to_num(poly), e)
+            return ins
+
+        ref = Shoreline(reference_shp, self.bbox, self.h0,
+                        crs=self.crs)
+        mine = _parity(self.mainland, self.inner)
+        theirs = _parity(ref.mainland, ref.inner)
+        n_disagree = int(np.logical_xor(mine, theirs).sum())
+        self.inpoly_flip = n_disagree > 50
+        if self.inpoly_flip:
+            logger.info(
+                f"Shapefile inpoly is inconsistent with the GSHHS "
+                f"reference ({n_disagree}/100) — flipping the "
+                f"inpoly test")
+        return self.inpoly_flip
+
     def _read(self):
         """Reads a ESRI Shapefile from `filename` ∩ `bbox`"""
         if not isinstance(self.bbox, tuple):
