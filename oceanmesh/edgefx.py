@@ -580,7 +580,6 @@ def bathymetric_gradient_sizing_function(
     coords = (xg, yg)
     # Work in physical units: if geographic CRS, convert degrees to meters for gradient
     if getattr(dem.crs, "is_geographic", False):
-        # Use mean latitude for scale; longitude metres/deg depends on cos(lat)
         lat0 = float(np.mean([dem.bbox[2], dem.bbox[3]]))
         meters_per_deg_lat = (
             111132.92
@@ -588,8 +587,14 @@ def bathymetric_gradient_sizing_function(
             + 1.175 * np.cos(4 * np.radians(lat0))
             - 0.0023 * np.cos(6 * np.radians(lat0))
         )
-        meters_per_deg_lon = 111320.0 * np.cos(np.radians(lat0))
-        dx *= meters_per_deg_lon
+        # edgefx.m:518: dx = h0*cosd(lat) is a PER-ROW vector — the
+        # longitudinal metre spacing shrinks with latitude. A scalar
+        # cos(mean lat) (~cos 0.5 deg on the global bbox) under-
+        # estimated |dz/dx| by 1/cos(lat) at mid/high-latitude
+        # continental slopes: the slope sizing sat 33% coarser than
+        # the .m over the shelf-slope band on Example_7.
+        lat_rows = yg[0, :]
+        dx = dx * 111320.0 * np.cos(np.radians(lat_rows))
         dy *= meters_per_deg_lat
     # edgefx.m slpfx is METRE-consistent throughout (dx =
     # h0*cosd(lat) metres feeds both filt2 and EarthGradient);
@@ -858,9 +863,10 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
             else:
                 tmpz_ft = tmpz[:, n2s:n2e]
 
-            by, bx = _earth_gradient(
-                tmpz_ft, dy, dx
-            )  # [n2s:n2e]) # get slope in x and y directions
+            # edgefx.m:576: EarthGradient(tmpz_ft, dy, dx(n2s:n2e))
+            # — the per-row (cos lat) x-spacing sliced to the block
+            _dxb = dx[n2s:n2e] if np.ndim(dx) else dx
+            by, bx = _earth_gradient(tmpz_ft, dy, _dxb)
             tempbs = np.sqrt(bx**2 + by**2)  # get overall slope
 
             bst[rosb == edges[i]] = tempbs[rosb == edges[i]]
