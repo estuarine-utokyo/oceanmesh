@@ -42,7 +42,9 @@ def mesh1d(poly, fh_eval, h0, max_iter=200):
     def fdist(s):
         return np.maximum(-s, s - total)  # my_1d_sdf
 
-    ptol, L0mult, deltat = 0.01, 1.2, 0.10
+    # mesh1d.m: L0mult = 1 + 0.4/2^(dim-1) with dim=1 -> 1.4
+    # (1.2 is the 2-D distmesh value)
+    ptol, L0mult, deltat = 0.01, 1.4, 0.10
     geps = 1e-3 * h0
     deps = np.sqrt(np.finfo(float).eps) * h0
 
