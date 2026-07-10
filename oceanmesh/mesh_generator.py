@@ -1249,18 +1249,31 @@ def generate_mesh(domain, edge_length, **kwargs):
         # mean quality dropped > 0.10 or node count dropped > 10%
         if (p_before_improve is not None
                 and (count + 1) % (opts["improve_every"] + 1) == 0):
-            mean_drop = qual_before_improve - qual_hist[-1][0]
+            # meshgen.m:813-822: the quality test is the ONE-STEP
+            # mean drop qual(it)-qual(it-1) < -0.10
+            mean_drop = (qual_hist[-2][0] - qual_hist[-1][0]
+                         if len(qual_hist) >= 2 else 0.0)
             count_drop = (len(p_before_improve) - len(p)) / max(
                 len(p_before_improve), 1
             )
+            _pb = p_before_improve
+            p_before_improve = None
             if mean_drop > 0.10 or count_drop > 0.10:
                 logger.info(
                     "improvement rewound (mean drop %.3f, count "
                     "drop %.1f%%)", mean_drop, 100 * count_drop,
                 )
-                p = p_before_improve
+                p = _pb
                 pold = None
-            p_before_improve = None
+                # meshgen.m:819-821: `it=it+1; continue` — the .m
+                # SKIPS the rest of this iteration so the next pass
+                # retriangulates BEFORE any force step. Falling
+                # through computed forces on the restored (longer)
+                # point array with the OLD post-improvement
+                # triangulation's indices — vertex mix-up that
+                # shredded the mesh (Example_6: NP 25.7k -> 18.3k,
+                # qual 0.877 -> 0.633 right after a rewind)
+                continue
 
         if opts["improve"] and at_checkpoint:
             # meshgen.m:883,952-953: gate on the 3-sigma-LOW metric
