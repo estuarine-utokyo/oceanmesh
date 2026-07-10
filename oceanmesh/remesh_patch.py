@@ -167,19 +167,32 @@ def remesh_patch(points, cells, polygon, sizing, engine="jigsaw",
 
     if engine == "jigsaw":
         try:
-            lo0 = 0.5 * (bnd[:, 0].min() + bnd[:, 0].max())
-            la0 = 0.5 * (bnd[:, 1].min() + bnd[:, 1].max())
-            proj = Transformer.from_crs(
-                "EPSG:4326",
-                f"+proj=tmerc +lon_0={lo0} +lat_0={la0} "
-                "+ellps=WGS84 +units=m", always_xy=True)
-            pp, tt = _remesh_jigsaw(bnd, sizing, proj)
-        except ImportError:
-            logger.warning("jigsawpy unavailable — falling back to "
-                           "the distmesh engine")
-            pp, tt = _remesh_distmesh(bnd, sizing, seed=seed)
-    else:
+            import jigsawpy  # noqa: F401
+        except ImportError as _err:
+            raise ImportError(
+                "remesh_patch(engine='jigsaw') requires the "
+                "optional jigsaw packages, which are NOT bundled "
+                "with oceanmesh (non-OSI license).\n"
+                "Install them with:\n"
+                "    mamba install -c conda-forge jigsawpy jigsaw\n"
+                "or explicitly choose the built-in engine:\n"
+                "    remesh_patch(..., engine='distmesh')  "
+                "(mesh2d-statistics-compatible, lower minimum "
+                "quality)"
+            ) from _err
+        lo0 = 0.5 * (bnd[:, 0].min() + bnd[:, 0].max())
+        la0 = 0.5 * (bnd[:, 1].min() + bnd[:, 1].max())
+        proj = Transformer.from_crs(
+            "EPSG:4326",
+            f"+proj=tmerc +lon_0={lo0} +lat_0={la0} "
+            "+ellps=WGS84 +units=m", always_xy=True)
+        pp, tt = _remesh_jigsaw(bnd, sizing, proj)
+    elif engine == "distmesh":
         pp, tt = _remesh_distmesh(bnd, sizing, seed=seed)
+    else:
+        raise ValueError(
+            f"Unknown engine '{engine}' — use 'jigsaw' or "
+            f"'distmesh'")
 
     if engine == "jigsaw":
         # Robust seam: delete ONE ring of outer triangles around
