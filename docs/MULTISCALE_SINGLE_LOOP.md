@@ -71,3 +71,17 @@ an asymmetric fringe.
   kept them — the same unpinned-corner drift lottery documented
   in EX5B_JBAY_ANALYSIS.md, that time against OM2D. Frame corners
   are not fixed points in either implementation.
+
+## Appendix: remesh_patch engines (Example_11)
+
+`om.remesh_patch(points, cells, polygon, sizing, engine=...)`
+regenerates the mesh inside a polygon and stitches it back with a
+band-CDT seam (area-exact, verified non-manifold-free).
+
+- `engine="jigsaw"` (default): jigsawpy — the successor of the
+  mesh2d engine OM2D calls. OPTIONAL dependency, not bundled
+  (non-OSI license): `mamba install -c conda-forge jigsawpy
+  jigsaw`. Falls back to "distmesh" automatically when absent.
+- `engine="distmesh"`: this package's OM2D-parity generator with
+  the patch boundary held fixed; statistically closest to the
+  mesh2d output.
