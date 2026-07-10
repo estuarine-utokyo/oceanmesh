@@ -12,6 +12,7 @@ handling), utilities/limgradStruct.m (spatially variable grade).
 import logging
 
 import numpy as np
+import scipy.spatial
 import skfmm
 from _HamiltonJacobi import gradient_limit
 
@@ -152,10 +153,29 @@ def enforce_nearshore_max_edge(grid, shoreline, max_edge_length_ns,
         points = points[inside]
     except Exception:  # pragma: no cover - degenerate boubox
         pass
-    indices = grid.find_indices(points, xg, yg)
-    phi[indices] = -1.0
-    dis = np.abs(skfmm.distance(phi, [grid.dx, grid.dy]))
-    band = dis < band_factor * shoreline.h0
+    # boudist is METRIC in the .m (dpoly metres); a degree-
+    # isotropic FMM undercounts E-W distances by cos(lat)
+    from pyproj import Transformer as _Transformer
+
+    _bb = shoreline.bbox
+    _trm = _Transformer.from_crs(
+        "EPSG:4326",
+        f"+proj=tmerc +lon_0={0.5*(_bb[0]+_bb[1])} "
+        f"+lat_0={0.5*(_bb[2]+_bb[3])} +ellps=WGS84 +units=m",
+        always_xy=True,
+    )
+
+    def _to_m(q):
+        x, y = _trm.transform(q[:, 0], q[:, 1])
+        return np.column_stack([x, y])
+
+    _lm = _to_m(points)
+    _lm = _lm[np.isfinite(_lm).all(axis=1)]
+    _ltree = scipy.spatial.cKDTree(_lm)
+    _qp = np.column_stack([xg.ravel(), yg.ravel()])
+    _dm, _ = _ltree.query(_to_m(_qp), k=1, workers=-1)
+    dis = _dm.reshape(xg.shape)
+    band = dis < band_factor * shoreline.h0 * 111e3
     cap = max_edge_length_ns / factor
     n = int((band & (np.asarray(grid.values) > cap)).sum())
     grid.values = np.where(band, np.minimum(grid.values, cap),
