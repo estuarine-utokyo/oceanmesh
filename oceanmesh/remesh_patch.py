@@ -181,60 +181,51 @@ def remesh_patch(points, cells, polygon, sizing, engine="jigsaw",
     else:
         pp, tt = _remesh_distmesh(bnd, sizing, seed=seed)
 
-    # conformity: jigsaw may INSERT nodes on the constrained
-    # boundary (few, but each creates a T-junction against the
-    # outer mesh). Fan-split the adjacent outer triangles at
-    # those inserted points so the seam matches node-for-node.
     if engine == "jigsaw":
-        chain = loops[0]
-        seg_a = points[chain]
-        seg_b = points[np.roll(chain, -1)]
-        ab = seg_b - seg_a
-        ab2 = np.maximum((ab * ab).sum(1), 1e-30)
-        inserted = {}
-        ctree = scipy.spatial.cKDTree(points[chain])
-        dch, _ = ctree.query(pp, k=1)
-        for qi in np.where(dch * 111e3 >= 1.0)[0]:
-            q = pp[qi]
-            tt_ = np.clip(((q - seg_a) * ab).sum(1) / ab2, 0, 1)
-            proj = seg_a + tt_[:, None] * ab
-            dd = np.hypot(*(q - proj).T) * 111e3
-            k = int(np.argmin(dd))
-            if dd[k] < 1.0:
-                inserted.setdefault(k, []).append((tt_[k], qi))
-        if inserted:
-            logger.info(
-                f"remesh_patch: conforming {sum(len(v) for v in inserted.values())} "
-                f"jigsaw boundary insertions into the outer mesh")
-            t_out = np.asarray(t_out)
-            new_tris = []
-            kill = []
-            for k, lst in inserted.items():
-                a, b = chain[k], chain[np.arange(len(chain))[k] - len(chain) + 1]
-                b = chain[(k + 1) % len(chain)]
-                # outer triangle owning edge (a, b)
-                own = np.where(((t_out == a).any(1))
-                               & ((t_out == b).any(1)))[0]
-                if len(own) != 1:
-                    continue
-                tri = t_out[own[0]]
-                c = tri[(tri != a) & (tri != b)][0]
-                kill.append(own[0])
-                seq = [a] + [len(points) + qi for _, qi in
-                             sorted(lst)] + [b]
-                for s0, s1 in zip(seq[:-1], seq[1:]):
-                    new_tris.append([s0, s1, c])
-            if kill:
-                t_out = np.delete(t_out, kill, axis=0)
-                t_out = np.vstack([t_out, np.asarray(new_tris)])
-        P_all = np.vstack([points, pp])
-        keep_idx = np.unique(t_out.reshape(-1))
-        # remap over the EXTENDED point array
-        remap = -np.ones(len(P_all), dtype=int)
-        remap[keep_idx] = np.arange(len(keep_idx))
-        P = np.vstack([P_all[keep_idx], pp])
-        T = np.vstack([remap[t_out], np.asarray(tt, dtype=int)
-                       + len(keep_idx)])
+        # Robust seam: delete ONE ring of outer triangles around
+        # the patch so the gap is a genuine annulus, then fill it
+        # with a constrained Delaunay triangulation of BOTH chains
+        # (no Steiner points) — conforming by construction, no
+        # T-junctions, no overlaps (fan-splitting proved fragile).
+        import triangle as _tri
+
+        chain_nodes = set(loops[0].tolist())
+        touch = np.array([any(v in chain_nodes for v in tri_)
+                          for tri_ in t_out])
+        t_ring = t_out[touch]
+        t_keep = t_out[~touch]
+        # outer boundary of the enlarged hole
+        hole_loops = _boundary_loops(points, np.vstack([t_in,
+                                                        t_ring]))
+        outer_chain = hole_loops[0]
+        # patch boundary chain (jigsaw mesh boundary)
+        pb = _boundary_loops(pp, np.asarray(tt, dtype=int))[0]
+        # assemble PSLG: outer chain nodes + patch chain nodes
+        A_pts = np.vstack([points[outer_chain], pp[pb]])
+        n1 = len(outer_chain)
+        n2 = len(pb)
+        seg1 = np.column_stack([np.arange(n1),
+                                (np.arange(n1) + 1) % n1])
+        seg2 = np.column_stack([np.arange(n2),
+                                (np.arange(n2) + 1) % n2]) + n1
+        inner_cen = pp[pb].mean(axis=0)
+        Astruct = dict(vertices=A_pts,
+                       segments=np.vstack([seg1, seg2]),
+                       holes=[[float(inner_cen[0]),
+                               float(inner_cen[1])]])
+        B = _tri.triangulate(Astruct, "p")
+        band_p = np.asarray(B["vertices"])
+        band_t = np.asarray(B["triangles"], dtype=int)
+        if len(band_p) != len(A_pts):
+            logger.warning(
+                "remesh_patch: band CDT added %d Steiner points",
+                len(band_p) - len(A_pts))
+        P = np.vstack([points, pp, band_p])
+        T = np.vstack([
+            t_keep,
+            np.asarray(tt, dtype=int) + len(points),
+            band_t + len(points) + len(pp),
+        ])
     else:
         keep_idx = np.unique(t_out.reshape(-1))
         remap = -np.ones(len(points), dtype=int)
@@ -242,6 +233,7 @@ def remesh_patch(points, cells, polygon, sizing, engine="jigsaw",
         P = np.vstack([points[keep_idx], pp])
         T = np.vstack([remap[t_out], np.asarray(tt, dtype=int)
                        + len(keep_idx)])
+
     tr_ = scipy.spatial.cKDTree(P)
     parent = np.arange(len(P))
 
