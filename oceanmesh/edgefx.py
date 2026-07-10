@@ -810,6 +810,7 @@ def rossby_radius_filter(tmpz, bbox, grid_details, coords, rbfilt, barot):
 def feature_sizing_function(
     shoreline,
     signed_distance_function,
+    lattice_anchor=None,
     r=3,
     min_edge_length=None,
     max_edge_length=None,
@@ -849,8 +850,16 @@ def feature_sizing_function(
     # OM2D featfx works on the h0 lattice (CreateStructGrid with
     # gridspace = h0); the pruning length scales below are tied to
     # that lattice spacing
+    _fx_bbox = shoreline.bbox
+    if lattice_anchor is not None:
+        # edgefx.m:214-217: the sizing lattice anchors at
+        # feat.x0y0 (the DEM lower-left), not the bbox corner.
+        # On ring-dense data the lattice PHASE shifts the
+        # narrow-channel medial census by +/-13% (Example_6)
+        _fx_bbox = (float(lattice_anchor[0]), _fx_bbox[1],
+                    float(lattice_anchor[1]), _fx_bbox[3])
     grid_calc = Grid(
-        bbox=shoreline.bbox,
+        bbox=_fx_bbox,
         dx=shoreline.h0,
         hmin=shoreline.h0,
         values=0.0,
@@ -858,7 +867,7 @@ def feature_sizing_function(
         crs=crs,
     )
     grid = Grid(
-        bbox=shoreline.bbox,
+        bbox=_fx_bbox,
         dx=shoreline.h0,
         hmin=shoreline.h0,
         values=0.0,
