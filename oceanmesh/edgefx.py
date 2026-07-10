@@ -499,6 +499,7 @@ def bathymetric_gradient_sizing_function(
     filter_cutoffs=1000,
     coarsen=1,
     crs=None,
+    grid_dx=None,
 ):
     """Mesh sizes that vary proportional to the bathymetryic gradient.
        Bathymetry is filtered by default using a fraction of the
@@ -528,6 +529,13 @@ def bathymetric_gradient_sizing_function(
         bounds for the filter (depends on the filter)
     crs: A Python int, dict, or str, optional
         The coordinate reference system
+    grid_dx: float, optional
+        Rasterise the sizing function on a lattice with this spacing
+        (CRS units) instead of the native DEM resolution. edgefx.m
+        builds ALL sizing rasters on the h0 lattice (CreateStructGrid);
+        native-resolution rasters explode on basin/global DEMs
+        (SRTM15+ global: 3.7e9 cells -> OOM). Mutually exclusive with
+        ``coarsen``.
 
     Returns
     -------
@@ -538,7 +546,15 @@ def bathymetric_gradient_sizing_function(
 
     logger.info("Building a slope length sizing function...")
 
-    xg, yg = dem.create_grid()
+    if grid_dx is not None:
+        if coarsen != 1:
+            raise ValueError("grid_dx and coarsen are mutually exclusive")
+        _slpg = Grid(
+            bbox=dem.bbox, dx=float(grid_dx), extrapolate=True, values=0.0, crs=dem.crs
+        )
+        xg, yg = _slpg.create_grid()
+    else:
+        xg, yg = dem.create_grid()
     tmpz = dem.eval((xg, yg)).astype(float)
 
     # Output lattice defaults to DEM resolution; optional integer coarsening
@@ -555,8 +571,12 @@ def bathymetric_gradient_sizing_function(
     )
     tmpz[tmpz > abs(min_elevation_cutoff)] = abs(min_elevation_cutoff)
 
-    dx, dy = dem.dx, dem.dy  # for gradient function (grid spacing units)
-    nx, ny = dem.nx, dem.ny
+    if grid_dx is not None:
+        dx = dy = float(grid_dx)  # lattice spacing feeds filt2 / EarthGradient
+        nx, ny = xg.shape
+    else:
+        dx, dy = dem.dx, dem.dy  # for gradient function (grid spacing units)
+        nx, ny = dem.nx, dem.ny
     coords = (xg, yg)
     # Work in physical units: if geographic CRS, convert degrees to meters for gradient
     if getattr(dem.crs, "is_geographic", False):
@@ -635,12 +655,12 @@ def bathymetric_gradient_sizing_function(
     if max_edge_length is not None:
         values[values > max_edge_length] = max_edge_length
 
-    # Build output grid on DEM lattice (or coarsened lattice)
+    # Build output grid on the rasterisation lattice (or coarsened lattice)
     if coarsen == 1:
         grid_out = Grid(
             bbox=dem.bbox,
-            dx=dem.dx,
-            dy=dem.dy,
+            dx=dem.dx if grid_dx is None else float(grid_dx),
+            dy=dem.dy if grid_dx is None else float(grid_dx),
             extrapolate=True,
             hmin=min_edge_length,
             crs=dem.crs,
@@ -1133,7 +1153,12 @@ def wavelength_sizing_function(
         dy *= meters_per_degree
         dx *= meters_per_degree
     grid = Grid(
-        bbox=dem.bbox, dx=dem.dx, dy=dem.dy, extrapolate=True, values=0.0, crs=crs
+        bbox=dem.bbox,
+        dx=dem.dx if grid_dx is None else float(grid_dx),
+        dy=dem.dy if grid_dx is None else float(grid_dx),
+        extrapolate=True,
+        values=0.0,
+        crs=crs,
     )
     tmpz[np.abs(tmpz) < 1] = 1
     wl_arr = np.asarray(wl, dtype=float)
@@ -1147,11 +1172,12 @@ def wavelength_sizing_function(
     else:
         grid.values = period * np.sqrt(gravity * np.abs(tmpz)) / wl
 
-    # Convert back to degrees from meters (if geographic)
+    # Convert back to degrees from meters (if geographic).
+    # NOTE: do NOT reset grid.dx/dy to the DEM spacing here — when
+    # grid_dx is active the values live on the h0 lattice and the
+    # DEM spacing would shear the interpolant coordinates.
     if crs == "EPSG:4326" or crs == 4326:
         grid.values /= meters_per_degree
-        grid.dx = dem.dx
-        grid.dy = dem.dy
 
     if min_edgelength is None:
         min_edgelength = np.amin(grid.values)
