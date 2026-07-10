@@ -1540,7 +1540,17 @@ class Shoreline(Region):
         100 points along the bbox diagonal; if the parity under
         this shapefile disagrees with the parity under a coarse
         GSHHS reference (GSHHS_l_L1) for more than 50 of them, the
-        shapefile encodes WATER polygons — set inpoly_flip."""
+        shapefile encodes WATER polygons — set inpoly_flip.
+
+        CAVEAT (Example_6b): the .m votes with polytester =
+        [obj.outer; obj.inner] where outer is the geodata.close()
+        BFS water-side-closed polygon, a structure this port does
+        not build (our domain closure lives in the signed-distance
+        function). Voting with the raw mainland segments matches
+        the .m decision on every dataset validated so far EXCEPT
+        the borderline 10m-LMSL contour (43/100 here, >50 in the
+        .m, golden log flips it) — for such contour datasets set
+        ``inpoly_flip`` explicitly from the MATLAB decision."""
         from .geometry import inpoly2
         from . import edges as _edges
 

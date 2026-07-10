@@ -255,7 +255,6 @@ def _limgrad_struct(grid, gradation_field):
     xeglen = grid.dx * np.cos(np.deg2rad(np.minimum(np.abs(lats), 85.0)))
     yeglen = float(grid.dy)
     ny = grid.values.shape[1]
-    ffun = np.asarray(grid.values, dtype=float).flatten("F").copy()
     ffun = np.asarray(grid.values, dtype=float).ravel(order="C").copy()
     # rows must vary fastest: our values are (nx, ny) with y along
     # axis 1 -> C-order ravel gives y fastest, matching jpos=y
@@ -380,10 +379,18 @@ def finalize_sizing(
             raise ValueError("banded gradation needs dem")
         z = _dem_on_grid(grid, dem)
         dfdx = elevation_bands(grad, z, default=float(np.nanmax(grad[:, 0])))
-        limited = gradient_limit(
-            [*sz], grid.dx, dfdx.flatten("F"), 10000,
-            np.asarray(grid.values, dtype=float).flatten("F"),
-        )
+        if _HAVE_LIMGRAD_STRUCT:
+            # same limgradStruct solver as the scalar branch —
+            # limgradStruct.m natively supports spatially variable
+            # fdfdx (bound taken from the LOWER node); routing the
+            # banded case through gradient_limit used a different
+            # solver without the per-row cos(lat) edge lengths
+            limited = _limgrad_struct(grid, dfdx).flatten("F")
+        else:
+            limited = gradient_limit(
+                [*sz], grid.dx, dfdx.flatten("F"), 10000,
+                np.asarray(grid.values, dtype=float).flatten("F"),
+            )
     grid.values = np.reshape(limited, grid.values.shape, "F")
 
     dt_eff = None
