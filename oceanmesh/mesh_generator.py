@@ -963,11 +963,18 @@ def generate_mesh(domain, edge_length, **kwargs):
                 x, y = _tr.transform(q[:, 0], q[:, 1])
                 return np.column_stack([x, y]) / _M
 
+            _wrap360 = bbox[0][1] > 180.0
+
             def _from_proj(q):
                 x, y = _tr.transform(
                     q[:, 0] * _M, q[:, 1] * _M,
                     direction="INVERSE",
                 )
+                if _wrap360:
+                    # pyproj normalises lon to [-180,180); a 0-360
+                    # domain (Example_8 dateline boubox) needs its
+                    # own frame back or fd rejects the eastern half
+                    x = np.where(x < bbox[0][0] - 1e-9, x + 360.0, x)
                 return np.column_stack([x, y])
 
             _unproject = _from_proj
