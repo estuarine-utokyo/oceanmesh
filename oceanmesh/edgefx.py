@@ -20,6 +20,47 @@ from .region import to_lat_lon, to_stereo
 
 logger = logging.getLogger(__name__)
 
+_R_EARTH = 6371e3
+
+
+def _metric_to_m_factory(bbox):
+    """Return a lonlat->metric mapper for KD distances.
+
+    Regional boxes use a tmerc plane (exact dpoly parity). Boxes
+    too wide for tmerc validity (lon span > 90 deg, e.g. global/
+    stereo domains) use 3-D earth-radius Cartesian coordinates:
+    chord distances equal great-circle metres locally and have no
+    projection singularity anywhere on the sphere.
+    """
+    lon_span = abs(bbox[1] - bbox[0])
+    if lon_span <= 90.0:
+        from pyproj import Transformer as _Transformer
+
+        _trm = _Transformer.from_crs(
+            "EPSG:4326",
+            f"+proj=tmerc +lon_0={0.5*(bbox[0]+bbox[1])} "
+            f"+lat_0={0.5*(bbox[2]+bbox[3])} +ellps=WGS84 +units=m",
+            always_xy=True,
+        )
+
+        def _to_m(q):
+            x, y = _trm.transform(q[:, 0], q[:, 1])
+            return np.column_stack([x, y])
+
+        return _to_m
+
+    def _to_m3(q):
+        lam = np.deg2rad(q[:, 0])
+        phi = np.deg2rad(q[:, 1])
+        return np.column_stack([
+            _R_EARTH * np.cos(phi) * np.cos(lam),
+            _R_EARTH * np.cos(phi) * np.sin(lam),
+            _R_EARTH * np.sin(phi),
+        ])
+
+    return _to_m3
+
+
 __all__ = [
     "enforce_mesh_gradation",
     "enforce_mesh_size_bounds_elevation",
@@ -135,7 +176,7 @@ def enforce_mesh_gradation(grid, gradation=0.15, crs="EPSG:4326", stereo=False):
             np.arange(-1, 1, dx_stereo), np.arange(-1, 1, dx_stereo), indexing="ij"
         )
         ulon, vlat = to_lat_lon(us.ravel(), vs.ravel())
-        utmp = grid.eval((ulon, vlat))
+        utmp = grid.eval(np.column_stack([ulon, vlat]))
         utmp = np.reshape(utmp, us.shape)
         szs = utmp.shape
         szs = (szs[0], szs[1], 1)
@@ -155,7 +196,8 @@ def enforce_mesh_gradation(grid, gradation=0.15, crs="EPSG:4326", stereo=False):
         grid_stereo.build_interpolant()
         # reinject back into the original grid and redo the gradient computation
         xg, yg = grid.create_grid()
-        tmp[yg > 0] = grid_stereo.eval(to_stereo(xg[yg > 0], yg[yg > 0]))
+        _us, _vs = to_stereo(xg[yg > 0], yg[yg > 0])
+        tmp[yg > 0] = grid_stereo.eval(np.column_stack([_us, _vs]))
         logger.info(
             "Global mesh: reinject back stereographic gradient and recomputing gradient..."
         )
@@ -414,19 +456,12 @@ def distance_sizing_function(
     # (mainland+inner), metres — the .m never fast-marches; a
     # degree-isotropic FMM undercounts E-W distances by cos(lat)
     # (2-3x at Alaska latitudes -> Example_8 NP +111%)
-    from pyproj import Transformer as _Transformer
-
-    _bb = shoreline.bbox
-    _trm = _Transformer.from_crs(
-        "EPSG:4326",
-        f"+proj=tmerc +lon_0={0.5*(_bb[0]+_bb[1])} "
-        f"+lat_0={0.5*(_bb[2]+_bb[3])} +ellps=WGS84 +units=m",
-        always_xy=True,
-    )
-
-    def _to_m(q):
-        x, y = _trm.transform(q[:, 0], q[:, 1])
-        return np.column_stack([x, y])
+    _to_m = _metric_to_m_factory(tuple(shoreline.bbox)
+                                 if isinstance(shoreline.bbox, tuple)
+                                 else (float(np.amin(shoreline.bbox[:, 0])),
+                                       float(np.amax(shoreline.bbox[:, 0])),
+                                       float(np.amin(shoreline.bbox[:, 1])),
+                                       float(np.amax(shoreline.bbox[:, 1]))))
 
     _land = [np.asarray(a) for a in
              (shoreline.mainland, shoreline.inner)
@@ -890,21 +925,13 @@ def feature_sizing_function(
     # pipeline (d, medial tests, dPOS, W, fsd) is metre-based in
     # OM2D. A raw-degree KD is direction-anisotropic (E-W distances
     # undercounted by cos(lat)) and biased the medial census.
-    from pyproj import Transformer as _Transformer
-
     _bb = shoreline.bbox
-    _lo0 = 0.5 * (_bb[0] + _bb[1])
-    _la0 = 0.5 * (_bb[2] + _bb[3])
-    _trm = _Transformer.from_crs(
-        "EPSG:4326",
-        f"+proj=tmerc +lon_0={_lo0} +lat_0={_la0} "
-        "+ellps=WGS84 +units=m",
-        always_xy=True,
-    )
-
-    def _to_m(q):
-        x, y = _trm.transform(q[:, 0], q[:, 1])
-        return np.column_stack([x, y])
+    if not isinstance(_bb, tuple):
+        _bb = (float(np.amin(shoreline.bbox[:, 0])),
+               float(np.amax(shoreline.bbox[:, 0])),
+               float(np.amin(shoreline.bbox[:, 1])),
+               float(np.amax(shoreline.bbox[:, 1])))
+    _to_m = _metric_to_m_factory(_bb)
 
     import time as _tm
 

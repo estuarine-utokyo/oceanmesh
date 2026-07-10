@@ -155,19 +155,15 @@ def enforce_nearshore_max_edge(grid, shoreline, max_edge_length_ns,
         pass
     # boudist is METRIC in the .m (dpoly metres); a degree-
     # isotropic FMM undercounts E-W distances by cos(lat)
-    from pyproj import Transformer as _Transformer
+    from .edgefx import _metric_to_m_factory
 
     _bb = shoreline.bbox
-    _trm = _Transformer.from_crs(
-        "EPSG:4326",
-        f"+proj=tmerc +lon_0={0.5*(_bb[0]+_bb[1])} "
-        f"+lat_0={0.5*(_bb[2]+_bb[3])} +ellps=WGS84 +units=m",
-        always_xy=True,
-    )
-
-    def _to_m(q):
-        x, y = _trm.transform(q[:, 0], q[:, 1])
-        return np.column_stack([x, y])
+    if not isinstance(_bb, tuple):
+        _bb = (float(np.amin(shoreline.bbox[:, 0])),
+               float(np.amax(shoreline.bbox[:, 0])),
+               float(np.amin(shoreline.bbox[:, 1])),
+               float(np.amax(shoreline.bbox[:, 1])))
+    _to_m = _metric_to_m_factory(_bb)
 
     _lm = _to_m(points)
     _lm = _lm[np.isfinite(_lm).all(axis=1)]

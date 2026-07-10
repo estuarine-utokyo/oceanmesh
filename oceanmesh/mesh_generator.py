@@ -1724,7 +1724,9 @@ def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=F
         p0 = p.reshape(2, -1).T
         x, y = to_stereo(p0[:, 0], p0[:, 1])
         p = np.asarray([x, y]).T
-        r0 = fh(to_lat_lon(p[:, 0], p[:, 1])) * _stereo_distortion(p0[:, 1])
+        _ll = to_lat_lon(p[:, 0], p[:, 1])
+        r0 = (fh(np.column_stack([_ll[0], _ll[1]]))
+              * _stereo_distortion(p0[:, 1]))
     else:
         r0 = fh(p)
     # meshgen.m:668 anchors the rejection at h0 itself
