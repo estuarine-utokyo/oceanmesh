@@ -435,7 +435,12 @@ def distance_sizing_function(
     if _land:
         _landp = np.vstack(_land)
         _landp = _landp[~np.isnan(_landp[:, 0])]
-        _ltree = scipy.spatial.cKDTree(_to_m(_landp))
+        _lm = _to_m(_landp)
+        # whole-kept continental polygons can extend >90 deg from
+        # lon_0 where tmerc is undefined (inf); such points can
+        # never be the nearest neighbour of an in-domain query
+        _lm = _lm[np.isfinite(_lm).all(axis=1)]
+        _ltree = scipy.spatial.cKDTree(_lm)
         _d_m, _ = _ltree.query(_to_m(qpts_all), k=1, workers=-1)
         dis = (_d_m / 111e3).reshape(lon.shape)
     else:
@@ -905,7 +910,9 @@ def feature_sizing_function(
     if land_pts:
         land = np.vstack(land_pts)
         land = land[~np.isnan(land[:, 0])]
-        ltree = scipy.spatial.cKDTree(_to_m(land))
+        _landm = _to_m(land)
+        _landm = _landm[np.isfinite(_landm).all(axis=1)]
+        ltree = scipy.spatial.cKDTree(_landm)
         logger.info(
             f"feature: land tree ({len(land):,} pts) "
             f"+{_tm.time()-_tfs:.0f}s")
