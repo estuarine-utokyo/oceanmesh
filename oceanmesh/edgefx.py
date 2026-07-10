@@ -549,13 +549,25 @@ def bathymetric_gradient_sizing_function(
     if grid_dx is not None:
         if coarsen != 1:
             raise ValueError("grid_dx and coarsen are mutually exclusive")
-        _slpg = Grid(
-            bbox=dem.bbox, dx=float(grid_dx), extrapolate=True, values=0.0, crs=dem.crs
-        )
-        xg, yg = _slpg.create_grid()
+        # geodata.m ParseDEM DECIMATES the DEM by an integer stride
+        # to match h0 ("DEM will be downsampled by a stride of N");
+        # every .m sizing raster then keeps the full sub-cell
+        # gradient variance. Bilinear resampling at the lattice
+        # points instead SMOOTHS the bathymetry and sat ~10% coarse
+        # across the whole gradient-driven band on Example_7.
+        sx = max(1, int(round(float(grid_dx) / float(dem.dx))))
+        sy = max(1, int(round(float(grid_dx) / float(dem.dy))))
+        logger.info("grid_dx: decimating DEM by strides (%d, %d)", sx, sy)
+        xv, yv = dem.create_vectors()
+        xg, yg = np.meshgrid(xv[::sx], yv[::sy], indexing="ij")
+        # copy: the clamp below must not write through the view
+        # into dem.values
+        tmpz = np.asarray(dem.values, dtype=float)[::sx, ::sy].copy()
+        _gdx = sx * float(dem.dx)  # exact raster spacings
+        _gdy = sy * float(dem.dy)
     else:
         xg, yg = dem.create_grid()
-    tmpz = dem.eval((xg, yg)).astype(float)
+        tmpz = dem.eval((xg, yg)).astype(float)
 
     # Output lattice defaults to DEM resolution; optional integer coarsening
     if coarsen < 1 or int(coarsen) != coarsen:
@@ -572,7 +584,7 @@ def bathymetric_gradient_sizing_function(
     tmpz[tmpz > abs(min_elevation_cutoff)] = abs(min_elevation_cutoff)
 
     if grid_dx is not None:
-        dx = dy = float(grid_dx)  # lattice spacing feeds filt2 / EarthGradient
+        dx, dy = _gdx, _gdy  # lattice spacing feeds filt2 / EarthGradient
         nx, ny = xg.shape
     else:
         dx, dy = dem.dx, dem.dy  # for gradient function (grid spacing units)
@@ -664,8 +676,8 @@ def bathymetric_gradient_sizing_function(
     if coarsen == 1:
         grid_out = Grid(
             bbox=dem.bbox,
-            dx=dem.dx if grid_dx is None else float(grid_dx),
-            dy=dem.dy if grid_dx is None else float(grid_dx),
+            dx=dem.dx if grid_dx is None else _gdx,
+            dy=dem.dy if grid_dx is None else _gdy,
             extrapolate=True,
             hmin=min_edge_length,
             crs=dem.crs,
@@ -1143,16 +1155,20 @@ def wavelength_sizing_function(
     logger.info("Building a wavelength sizing function...")
 
     if grid_dx is not None:
-        # edgefx.m builds ALL sizing rasters on the h0 lattice
-        # (CreateStructGrid) and samples the DEM interpolant onto
-        # it; rasterising at native DEM resolution explodes on
-        # basin/global DEMs (SRTM15+ global: 3.7e9 cells -> OOM)
-        _wlg = Grid(bbox=dem.bbox, dx=float(grid_dx),
-                    extrapolate=True, values=0.0, crs=crs)
-        lon, lat = _wlg.create_grid()
+        # geodata.m ParseDEM decimates the DEM by an integer stride
+        # to match h0; rasterising at native DEM resolution explodes
+        # on basin/global DEMs (SRTM15+ global: 3.7e9 cells -> OOM).
+        # Same stride mechanism as bathymetric_gradient_sizing_function.
+        _sx = max(1, int(round(float(grid_dx) / float(dem.dx))))
+        _sy = max(1, int(round(float(grid_dx) / float(dem.dy))))
+        _xv, _yv = dem.create_vectors()
+        lon, lat = np.meshgrid(_xv[::_sx], _yv[::_sy], indexing="ij")
+        tmpz = np.asarray(dem.values, dtype=float)[::_sx, ::_sy].copy()
+        _gdx = _sx * float(dem.dx)
+        _gdy = _sy * float(dem.dy)
     else:
         lon, lat = dem.create_grid()
-    tmpz = dem.eval((lon, lat))
+        tmpz = dem.eval((lon, lat))
 
     dx, dy = dem.dx, dem.dy  # for gradient function
 
@@ -1171,8 +1187,8 @@ def wavelength_sizing_function(
         dx *= meters_per_degree
     grid = Grid(
         bbox=dem.bbox,
-        dx=dem.dx if grid_dx is None else float(grid_dx),
-        dy=dem.dy if grid_dx is None else float(grid_dx),
+        dx=dem.dx if grid_dx is None else _gdx,
+        dy=dem.dy if grid_dx is None else _gdy,
         extrapolate=True,
         values=0.0,
         crs=crs,
