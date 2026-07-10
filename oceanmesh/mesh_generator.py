@@ -1464,6 +1464,20 @@ def _improve_points(p, t, fh, fd, geps, pfix, lock_boundary,
         hbars[~valid] = np.nanmedian(hbars[valid])
     L0 = hbars * L0mult * (np.nanmedian(L) / np.nanmedian(hbars))
     LN = L / L0
+    if os.environ.get("OM_TRACE_IMPROVE") == "1":
+        _sc = float(np.nanmedian(L) / np.nanmedian(hbars))
+        _del = LN < 0.5
+        _spl = np.floor(LN) >= 2
+        logger.info(
+            "[improve-trace] scale=%.3f  del n=%d L_m p50=%.0f "
+            "hbar_m p50=%.0f  spl n=%d L_m p50=%.0f hbar_m p50=%.0f",
+            _sc, int(_del.sum()),
+            float(np.nanmedian(L[_del]) * 111e3) if _del.any() else -1,
+            float(np.nanmedian(hbars[_del]) * 111e3) if _del.any() else -1,
+            int(_spl.sum()),
+            float(np.nanmedian(L[_spl]) * 111e3) if _spl.any() else -1,
+            float(np.nanmedian(hbars[_spl]) * 111e3) if _spl.any() else -1,
+        )
 
     n_low = len(low)
     for a, b in bars[LN < 0.5]:
