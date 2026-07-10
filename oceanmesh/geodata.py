@@ -1557,10 +1557,23 @@ class Shoreline(Region):
         delimiter[:] = np.nan
         re = numpy.array([0, 2, 1, 3], dtype=int)
 
+        # geodata.m:469-500: a bbox given in the 0-360 frame that
+        # extends past lon 180 also collects geometries whose native
+        # longitudes are negative, shifted by +360 (GSHHS splits its
+        # polygons at the dateline, so no segment crosses it)
+        _wrap360 = _bbox[1] > 180.0
         for g in s.geometry:
             # extent of geometry
             bbox2 = [g.bounds[r] for r in re]
+            _hits = []
             if _is_overlapping(_bbox, bbox2):
+                _hits.append(0.0)
+            if _wrap360 and _is_overlapping(
+                _bbox, [bbox2[0] + 360.0, bbox2[1] + 360.0,
+                        bbox2[2], bbox2[3]]
+            ):
+                _hits.append(360.0)
+            for _shift in _hits:
                 if g.geom_type == "LineString":
                     poly = np.asarray(g.coords)
                 elif g.geom_type == "Polygon":  # a polygon
@@ -1569,6 +1582,9 @@ class Shoreline(Region):
                     raise ValueError(f"Unsupported geometry type: {g.geom_type}")
 
                 poly = remove_dup(poly)
+                if _shift:
+                    poly = poly.copy()
+                    poly[:, 0] += _shift
                 polys.append(np.vstack((poly, delimiter)))
 
         if len(polys) == 0:
