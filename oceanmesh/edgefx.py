@@ -1181,7 +1181,22 @@ def channel_sizing_function(
         poly = poly[inb]
         if len(poly) == 0:
             continue
+        # chfx: points outside the DEM footprint have NaN depth;
+        # MATLAB's min() ignores the resulting NaN chd, i.e. NO
+        # channel refinement there. Drop them (Example_6: inland
+        # thalwegs beyond the Galveston DEM got painted 60-166 m
+        # where OM2D leaves ~max_el -> +27% NP).
+        _dbb = dem.bbox
+        _ind = ((poly[:, 0] >= _dbb[0]) & (poly[:, 0] <= _dbb[1])
+                & (poly[:, 1] >= _dbb[2]) & (poly[:, 1] <= _dbb[3]))
+        poly = poly[_ind]
+        if len(poly) == 0:
+            continue
         z = np.asarray(dem.eval(poly), dtype=float)
+        _zfin = np.isfinite(z)
+        poly, z = poly[_zfin], z[_zfin]
+        if len(poly) == 0:
+            continue
         dp = np.maximum(1.0, -z)
         radii = tanre * dp / m_per_unit  # stencil radius, grid units
         for (px, py), r, d in zip(poly, radii, dp):
@@ -1192,10 +1207,20 @@ def channel_sizing_function(
             j0, j1 = max(0, j - nidx), min(ny, j + nidx + 1)
             if i0 >= i1 or j0 >= j1:
                 continue
-            hsize = max(d / ch, min_edge_length_channel) / m_per_unit
+            # edgefx.m:678-690: chd at each STENCIL cell from that
+            # cell's own DEM depth (NaN cells skipped by min())
+            zc = np.asarray(dem.eval(np.column_stack(
+                [xg[i0:i1, j0:j1].ravel(),
+                 yg[i0:i1, j0:j1].ravel()])), dtype=float)
+            dpc = np.maximum(1.0, -zc)
+            hs = np.maximum(dpc / ch,
+                            min_edge_length_channel) / m_per_unit
+            hs = np.where(np.isfinite(zc), hs, np.nan)
+            hs = hs.reshape(i1 - i0, j1 - j0)
             blk = values[i0:i1, j0:j1]
-            blk = np.where(np.isnan(blk), hsize,
-                           np.minimum(blk, hsize))
+            both = ~np.isnan(hs)
+            blk = np.where(both & np.isnan(blk), hs,
+                           np.where(both, np.fmin(blk, hs), blk))
             values[i0:i1, j0:j1] = blk
     if min_edge_length is not None:
         values = np.maximum(values, min_edge_length / m_per_unit)
