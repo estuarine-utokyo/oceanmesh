@@ -1307,6 +1307,7 @@ def generate_mesh(domain, edge_length, **kwargs):
                     p = _improve_points(
                         p, t, fh, fd, geps, pfix, lock_boundary,
                         opts["rewind_threshold"],
+                        stereo=opts["stereo"],
                     )
                     pold = None
                     continue
@@ -1438,7 +1439,7 @@ def _al_quality(p, t):
 
 
 def _improve_points(p, t, fh, fd, geps, pfix, lock_boundary,
-                    rewind_threshold, L0mult=1.2):
+                    rewind_threshold, L0mult=1.2, stereo=False):
     """Exact port of the OM2D improvement block
     (meshgen.m:948-1000):
     - nn: nodes touching <= 4 elements, excluding boundary nodes
@@ -1471,7 +1472,19 @@ def _improve_points(p, t, fh, fd, geps, pfix, lock_boundary,
     bars = _get_bars(t)
     barvec = p[bars[:, 0]] - p[bars[:, 1]]
     L = np.sqrt((barvec**2).sum(1))
-    hbars = np.asarray(fh(p[bars].sum(1) / 2), dtype=float)
+    mid = p[bars].sum(1) / 2
+    if stereo:
+        # points live in the stereographic plane: evaluate fh in
+        # lat/lon and convert to plane units, EXACTLY as the force
+        # step does — evaluating fh on raw stereo coordinates made
+        # LN uniform-in-plane and the split rule inflated the
+        # global mesh 2.7M -> 6M vertices (Example_7)
+        _lon, _lat = to_lat_lon(mid[:, 0], mid[:, 1])
+        hbars = np.asarray(
+            fh(np.column_stack([_lon, _lat])), dtype=float
+        ) * _stereo_distortion_dist(_lat)
+    else:
+        hbars = np.asarray(fh(mid), dtype=float)
     valid = np.isfinite(hbars) & (hbars > 0)
     if not valid.all():
         hbars[~valid] = np.nanmedian(hbars[valid])
