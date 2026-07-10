@@ -410,13 +410,35 @@ def distance_sizing_function(
             logger.error(e)
             ...
 
-    # find location of points on grid
-    indices = grid.find_indices(points, lon, lat)
-    phi[indices] = -1.0
-    try:
-        dis = np.abs(skfmm.distance(phi, [grid.dx, grid.dy]))
-    except ValueError:
-        logger.info("0-level set not found in domain or grid malformed")
+    # @edgefx dpoly distance: metric KD to the land points
+    # (mainland+inner), metres — the .m never fast-marches; a
+    # degree-isotropic FMM undercounts E-W distances by cos(lat)
+    # (2-3x at Alaska latitudes -> Example_8 NP +111%)
+    from pyproj import Transformer as _Transformer
+
+    _bb = shoreline.bbox
+    _trm = _Transformer.from_crs(
+        "EPSG:4326",
+        f"+proj=tmerc +lon_0={0.5*(_bb[0]+_bb[1])} "
+        f"+lat_0={0.5*(_bb[2]+_bb[3])} +ellps=WGS84 +units=m",
+        always_xy=True,
+    )
+
+    def _to_m(q):
+        x, y = _trm.transform(q[:, 0], q[:, 1])
+        return np.column_stack([x, y])
+
+    _land = [np.asarray(a) for a in
+             (shoreline.mainland, shoreline.inner)
+             if a is not None and len(a)]
+    qpts_all = np.column_stack((lon.flatten(), lat.flatten()))
+    if _land:
+        _landp = np.vstack(_land)
+        _landp = _landp[~np.isnan(_landp[:, 0])]
+        _ltree = scipy.spatial.cKDTree(_to_m(_landp))
+        _d_m, _ = _ltree.query(_to_m(qpts_all), k=1, workers=-1)
+        dis = (_d_m / 111e3).reshape(lon.shape)
+    else:
         dis = np.zeros((grid.nx, grid.ny)) + 999
     tmp = shoreline.h0 + dis * rate
     if max_edge_length is not None:
