@@ -762,14 +762,24 @@ def _classify_shoreline(bbox, boubox, polys, h0, minimum_area_mult, stereo=False
         if len(pts) < 3:
             continue
         inside, _ = _inpoly2(pts, ring_nn, e_box)
+        # Read_shapefile.m:209-213: only CLOSED rings get a shoelace
+        # area; unclosed polylines get the sentinel 999 (deg^2), so
+        # they are ALWAYS kept. Implicitly closing a thin polyline
+        # (e.g. the US Medium Shoreline dike/marsh lines) gives a
+        # near-zero area and silently discarded real features.
+        _closed = np.allclose(pts[0], pts[-1])
+        _area = (abs(_poly_area(pts[:, 0], pts[:, 1]))
+                 if _closed else 999.0)
         if inside.all():
             # wholly inside -> island (Read_shapefile.m:217-228)
-            if abs(_poly_area(pts[:, 0], pts[:, 1])) >= _AREAMIN:
+            if _area >= _AREAMIN:
                 islands.append(poly)
         else:
             # partially inside or outside -> mainland, kept WHOLE
-            # (Read_shapefile.m:229-241; no geometric clipping)
-            main_parts.append(poly)
+            # (Read_shapefile.m:229-241, pruned at 100*h0^2; no
+            # geometric clipping)
+            if _area >= 100.0 * h0**2:
+                main_parts.append(poly)
 
     # Merge islands that OVERLAP the mainland (share >= 3 vertices
     # at ismembertol tolerance) into the mainland via polygon
