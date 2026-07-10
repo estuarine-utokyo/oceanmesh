@@ -250,22 +250,37 @@ except Exception:  # pragma: no cover
 def _limgrad_struct(grid, gradation_field):
     """Run limgradStruct on a Grid: xeglen per row = dx*cos(lat)
     (edgefx.m:306-308 uses h0*cosd(lat) with dy=h0), column-major
-    flattening (rows = y vary fastest), degrees throughout."""
+    flattening (rows = y vary fastest), degrees throughout.
+
+    Global grids (lon spanning exactly +-180) get the cyclical
+    x-padding of edgefx.m:890-937: prepend the last row and append
+    the first, relax, strip the pads and copy row 0 onto the last
+    row so the dateline seam carries no gradient jump."""
     lats = grid.create_grid()[1][0, :]
     xeglen = grid.dx * np.cos(np.deg2rad(np.minimum(np.abs(lats), 85.0)))
     yeglen = float(grid.dy)
-    ny = grid.values.shape[1]
-    ffun = np.asarray(grid.values, dtype=float).ravel(order="C").copy()
+    vals = np.asarray(grid.values, dtype=float)
+    fdfdx = np.asarray(gradation_field, dtype=float)
+    cyclical = (abs(grid.bbox[0]) == 180 and abs(grid.bbox[1]) == 180)
+    if cyclical:
+        vals = np.vstack([vals[-1:, :], vals, vals[:1, :]])
+        if fdfdx.ndim == 2:
+            fdfdx = np.vstack([fdfdx[-1:, :], fdfdx, fdfdx[:1, :]])
+    ny = vals.shape[1]
+    ffun = vals.ravel(order="C").copy()
     # rows must vary fastest: our values are (nx, ny) with y along
     # axis 1 -> C-order ravel gives y fastest, matching jpos=y
-    fdfdx = np.asarray(gradation_field, dtype=float)
     if fdfdx.ndim == 0:
         fdfdx = np.full_like(ffun, float(fdfdx))
     else:
         fdfdx = fdfdx.ravel(order="C").astype(float)
     out = _limgrad_struct_kernel(ny, xeglen.astype(float), yeglen,
                                  ffun, fdfdx, 10000)
-    return out.reshape(grid.values.shape, order="C")
+    out = out.reshape(vals.shape, order="C")
+    if cyclical:
+        out = out[1:-1, :]
+        out[-1, :] = out[0, :]
+    return out
 
 
 def finalize_sizing(
