@@ -1718,9 +1718,18 @@ def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=F
         rows = []
         for i in range(ny + 1):
             lat = min(lat0 + i * dy, lat1 - 1e-9)
-            nx = int(np.floor(
-                (lon1 - lon0) * np.cos(np.radians(lat)) / colsp
-            ))
+            # meshgen.m:701-707 row length: m_lldist between
+            # (-180,lat)-(0,lat) plus (0,lat)-(180,lat). Each pair is
+            # 180 deg of longitude apart, so the GREAT-CIRCLE goes
+            # over the pole: each half spans (180 - 2|lat|) degrees,
+            # NOT 180*cos(lat) along the parallel. Mid-latitudes are
+            # therefore seeded ~25-30% thinner than the parallel
+            # length (an upstream quirk — the intent was clearly the
+            # parallel — but every OM2D global golden is seeded with
+            # it; cos(lat) rows gave +27% seeds vs MATLAB on
+            # Example_7: 1.86M vs 1.46M).
+            row_len_deg = 2.0 * max(180.0 - 2.0 * abs(lat), 0.0)
+            nx = int(np.floor(row_len_deg / colsp))
             if nx < 1:
                 continue
             if i % 2 == 0:
