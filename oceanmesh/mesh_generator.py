@@ -1702,14 +1702,38 @@ def _stereo_distortion_dist(lat):
 def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=False):
     """Create initial distribution in bounding box (equilateral triangles)"""
     if stereo:
-        bbox = np.array([[-180, 180], [-89, 89]])
-    if stereo:
-        p = np.mgrid[
-            tuple(
-                slice(min, max + min_edge_length, min_edge_length)
-                for min, max in bbox
-            )
-        ].astype(float)
+        # meshgen.m:686-731 global seeding: an equilateral lattice
+        # with PHYSICAL spacing — rows h0 metres apart along the
+        # meridian, per-row column count from the parallel's
+        # great-circle length / (2/sqrt(3)*h0) (so columns thin out
+        # as cos(lat)), odd rows offset half a column. Rejection is
+        # the plain (h0/fh)^2 — NO stereographic distortion factor:
+        # both the lattice and fh are physical. The previous
+        # square-degree lattice + 2/(1+cos(lat)) rejection
+        # over-seeded Example_7 1.9x (2.74M vs MATLAB's 1.46M).
+        lon0, lon1, lat0, lat1 = -180.0, 180.0, -89.0, 90.0
+        ny = int(np.floor((lat1 - lat0) / min_edge_length))
+        dy = (lat1 - lat0) / ny
+        colsp = 2.0 / np.sqrt(3.0) * min_edge_length
+        rows = []
+        for i in range(ny + 1):
+            lat = min(lat0 + i * dy, lat1 - 1e-9)
+            nx = int(np.floor(
+                (lon1 - lon0) * np.cos(np.radians(lat)) / colsp
+            ))
+            if nx < 1:
+                continue
+            if i % 2 == 0:
+                # meshgen.m: odd MATLAB rows (ii=1,3,..) are offset
+                dxr = (lon1 - lon0) / nx
+                xs = np.linspace(lon0 + 0.5 * dxr, lon1, nx)
+            else:
+                xs = np.linspace(lon0, lon1, nx)
+            rows.append(np.column_stack([xs, np.full(nx, lat)]))
+        p0 = np.vstack(rows)
+        r0 = np.asarray(fh(p0), dtype=float)
+        x, y = to_stereo(p0[:, 0], p0[:, 1])
+        p = np.column_stack([x, y])
     else:
         # OM2D equilateral seeding (meshgen.m:680-712): rows at
         # min_edge spacing, columns at 2/sqrt(3)*min_edge, odd rows
@@ -1727,20 +1751,6 @@ def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=F
                 np.column_stack([xs, np.full(len(xs), y)])
             )
         p = np.vstack(rows)
-    if stereo:
-        # For global meshes (including mixed global+regional) we generate points in lat/lon,
-        # then project to stereo. The sizing function fh has already been wrapped (if needed)
-        # to internally transform coordinates back to lat/lon for regional grids.
-        # for global meshes in stereographic projections,
-        # we need to reproject the points from lon/lat to stereo projection
-        # then, we need to rectify their coordinates to lat/lon for the sizing function
-        p0 = p.reshape(2, -1).T
-        x, y = to_stereo(p0[:, 0], p0[:, 1])
-        p = np.asarray([x, y]).T
-        _ll = to_lat_lon(p[:, 0], p[:, 1])
-        r0 = (fh(np.column_stack([_ll[0], _ll[1]]))
-              * _stereo_distortion(p0[:, 1]))
-    else:
         r0 = fh(p)
     # meshgen.m:668 anchors the rejection at h0 itself
     # (max_r0 = 1/h0_l^2): accept with prob (h0/fh)^2. Anchoring at
