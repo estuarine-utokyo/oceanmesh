@@ -555,7 +555,7 @@ def _nan_segments(polys):
 
 
 def _cull_small_features(polys, boubox, h0, island_mult=4.0,
-                         mainland_mult=100.0):
+                         mainland_mult=100.0, stereo=False):
     """OM2D Read_shapefile area culling on raw polygons.
 
     Islands wholly inside the domain polygon with shoelace area
@@ -563,6 +563,15 @@ def _cull_small_features(polys, boubox, h0, island_mult=4.0,
     < mainland_mult*h0^2 are dropped (Read_shapefile.m:219,231).
     Open segments are kept untouched. h0 is in the same units as
     the coordinates (degrees).
+
+    stereo=True: the file coordinates are stereographic but the .m
+    always culls by LONLAT area (geodata never sees projected
+    coordinates in OM2D) — areas are computed on the inverse-
+    projected ring. Culling by stereo-frame area silently deleted
+    every island below continent scale (the plane is radian-scaled
+    and shrinks with 1/(1+sin(lat))^2: Stewart Island, 0.20 deg^2,
+    measures 5.8e-4 stereo units^2 vs the 5.2e-3 threshold — only
+    61 rings worldwide survived on Example_7).
     """
     from shapely.geometry import Polygon as _Pg
 
@@ -587,7 +596,11 @@ def _cull_small_features(polys, boubox, h0, island_mult=4.0,
             pg = _Pg(pts)
             if not pg.is_valid:
                 pg = pg.buffer(0)
-            area = pg.area
+            if stereo:
+                _xy = np.asarray(pg.exterior.xy)
+                area = abs(_poly_area(*to_lat_lon(_xy[0], _xy[1])))
+            else:
+                area = pg.area
             inside = bpoly.contains(pg)
         except Exception:
             out.append(seg)
@@ -885,42 +898,68 @@ def _classify_shoreline_stereo(bbox, boubox, polys, h0, minimum_area_mult):
     mainland[:] = nan
 
     polyL = _convert_to_list(polys)
-    bSGP = shapely.geometry.Polygon(boubox)
 
-    for poly in polyL:
+    # The outer meshing boundary of the global stereo domain is the
+    # polygon enclosing the LARGEST stereo-frame area — the
+    # Antarctic ice-front ring, whose interior disc is the whole
+    # world ocean. The previous sequential replacement
+    # (elif pSGP.overlaps(bSGP): bSGP = pSGP) depended on polygon
+    # order and, once _cull_small_features stopped deleting them,
+    # was hijacked by thin out-and-back ice loops with a huge
+    # radius but near-zero enclosed area (the boubox degraded to a
+    # lat -80 sliver ring and the whole ocean classified outside).
+    # The outer ring must WIND ONCE around the stereo origin (the
+    # north pole — open Arctic ocean, inside every world-enclosing
+    # ring and inside no land polygon). Parity at the origin
+    # rejects out-and-back circumpolar ice loops (even winding),
+    # which fool both shapely .area (odd-even sum on invalid
+    # rings) and the raw shoelace (annulus area is large). Among
+    # odd-parity rings take the largest |shoelace|.
+    from matplotlib.path import Path as _MPath
+
+    best_i, best_area = -1, -1.0
+    for i, poly in enumerate(polyL):
+        pts = poly[:-2, :]
+        pts = pts[np.isfinite(pts[:, 0])]
+        if len(pts) < 4:
+            continue
+        if not (pts[:, 0].min() < 0.0 < pts[:, 0].max()
+                and pts[:, 1].min() < 0.0 < pts[:, 1].max()):
+            continue
+        if not _MPath(pts).contains_point((0.0, 0.0)):
+            continue
+        _a = abs(_poly_area(pts[:, 0], pts[:, 1]))
+        if _a > best_area:
+            best_i, best_area = i, _a
+    if best_i >= 0:
+        from shapely.validation import make_valid
+
+        bSGP = shapely.geometry.Polygon(polyL[best_i][:-2, :])
+        if not bSGP.is_valid:
+            bSGP = make_valid(bSGP)
+        logger.info(
+            "stereo classify: outer boundary ring #%d (winds the "
+            "pole), stereo shoelace area %.1f", best_i, best_area)
+    else:
+        bSGP = shapely.geometry.Polygon(boubox)
+
+    n_discarded = 0
+    for i, poly in enumerate(polyL):
+        if i == best_i:
+            continue
         pSGP = shapely.geometry.Polygon(poly[:-2, :])
         if bSGP.contains(pSGP):
-            if stereo:
-                # convert back to Lat/Lon coordinates for the area testing
-                area = _poly_area(*to_lat_lon(*np.asarray(pSGP.exterior.xy)))
-            else:
-                area = pSGP.area
-            if area >= _AREAMIN:
+            # cull by LONLAT area as geodata.m does (signed
+            # shoelace -> abs: ring orientation must not veto)
+            area = _poly_area(*to_lat_lon(*np.asarray(pSGP.exterior.xy)))
+            if abs(area) >= _AREAMIN:
                 inner = np.append(inner, poly, axis=0)
-        elif pSGP.overlaps(bSGP):
-            if stereo:
-                bSGP = pSGP
-            else:
-                # GEOS difference() raises TopologyException ("side
-                # location conflict") when either operand carries the
-                # near-degenerate rings that the tiny-buffer repairs
-                # above can produce; make_valid() both sides first.
-                from shapely.errors import GEOSException
-                from shapely.validation import make_valid
-
-                if not bSGP.is_valid:
-                    bSGP = make_valid(bSGP)
-                if not pSGP.is_valid:
-                    pSGP = make_valid(pSGP)
-                try:
-                    bSGP = bSGP.difference(pSGP)
-                except GEOSException:
-                    bSGP = make_valid(bSGP).difference(
-                        make_valid(pSGP.buffer(0))
-                    )
-                # Append polygon segment to mainland
-                mainland = np.vstack((mainland, poly))
-                # Clip polygon segment from boubox and regenerate path
+        else:
+            n_discarded += 1
+    if n_discarded:
+        logger.info(
+            "stereo classify: %d polygons outside/crossing the "
+            "outer ice boundary discarded", n_discarded)
 
     out = np.empty(shape=(0, 2))
 
@@ -1422,7 +1461,8 @@ class Shoreline(Region):
         # < 100*h0^2 (Read_shapefile.m:219,231)
         polys = _cull_small_features(
             polys, self.boubox, self.h0,
-            island_mult=self.minimum_area_mult, mainland_mult=100.0
+            island_mult=self.minimum_area_mult, mainland_mult=100.0,
+            stereo=getattr(self, "stereo", False),
         )
 
         # keep the PRE-densification region ring: the multiscale
