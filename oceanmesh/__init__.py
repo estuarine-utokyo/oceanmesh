@@ -54,6 +54,7 @@ from oceanmesh.mesh_merge import (
 from oceanmesh.weirs import build_weir_geometry, match_weir_nodes
 from oceanmesh.boundary_conditions import (
     boundary_loops,
+    extract_fixed_constraints,
     make_bc_auto,
     read_fort14,
     write_2dm,
@@ -164,6 +165,7 @@ __all__ = [
     "finalize_sizing",
     "wave_celerity",
     "boundary_loops",
+    "extract_fixed_constraints",
     "make_bc_auto",
     "read_fort14",
     "write_fort14",

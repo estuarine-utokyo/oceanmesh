@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "boundary_loops",
+    "extract_fixed_constraints",
     "make_bc_auto",
     "read_fort14",
     "write_fort14",
@@ -155,6 +156,45 @@ def make_bc_auto(
         len(out["open"]), len(out["land"]), len(out["island"]),
     )
     return out
+
+
+def extract_fixed_constraints(points, cells, open_strings=None):
+    """Port of msh.extractFixedConstraints (msh.m:3928): every
+    exterior boundary edge of the mesh, minus any edge touching an
+    ocean (open) boundary node, becomes a fixed constraint for a
+    subsequent meshgen call (Example_6b floodplain workflow).
+
+    Parameters
+    ----------
+    points, cells:
+        the source mesh
+    open_strings: iterable of node-index arrays, optional
+        the ``"open"`` entry of :func:`make_bc_auto`; when given,
+        edges touching these nodes are removed so only shoreline
+        (land/island) constraints remain
+
+    Returns
+    -------
+    (pfix, egfix):
+        pfix (M, 2) coordinates and egfix (K, 2) 0-based indices
+        into pfix (renumberEdges semantics)
+    """
+    p = np.asarray(points, dtype=float)
+    egfix = np.asarray(get_boundary_edges(cells))
+    if open_strings is not None and len(open_strings) > 0:
+        ocean = np.unique(
+            np.concatenate([np.asarray(s).ravel() for s in open_strings])
+        )
+        keep = ~(np.isin(egfix[:, 0], ocean) | np.isin(egfix[:, 1], ocean))
+        logger.info(
+            "extract_fixed_constraints: removed %d ocean-boundary edges",
+            int((~keep).sum()),
+        )
+        egfix = egfix[keep]
+    uniq, inv = np.unique(egfix, return_inverse=True)
+    pfix = p[uniq]
+    egfix = inv.reshape(egfix.shape)
+    return pfix, egfix
 
 
 def write_fort14(filepath, points, cells, depth=None, boundaries=None,
