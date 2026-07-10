@@ -96,8 +96,21 @@ def _remesh_jigsaw(bnd, sizing, crs_proj):
     hv = np.asarray(sizing.eval(np.column_stack([lon, lat]))) * 111e3
     hmat.xgrid = xv
     hmat.ygrid = yv
-    hmat.value = np.ascontiguousarray(
-        hv.reshape(X.shape).T, dtype=np.float64)
+    HV = hv.reshape(X.shape)
+    # keep the boundary discretization intact: jigsaw SPLITS
+    # constrained geom edges longer than the local hfun, which
+    # breaks node-for-node stitching with the outer mesh (2,805
+    # orphan seam edges on the Ex11 patch). Clamp hfun near the
+    # boundary to >= 1.15x the local boundary edge length.
+    _emid = 0.5 * (bm + np.roll(bm, -1, axis=0))
+    _elen = np.hypot(*(bm - np.roll(bm, -1, axis=0)).T)
+    _et = scipy.spatial.cKDTree(_emid)
+    _gp = np.column_stack([X.ravel(), Y.ravel()])
+    _d, _i = _et.query(_gp, k=1, workers=-1)
+    _near = _d < 2.0 * _elen[_i]
+    _clamp = np.where(_near, 1.15 * _elen[_i], 0.0)
+    HV = np.maximum(HV, _clamp.reshape(X.shape))
+    hmat.value = np.ascontiguousarray(HV.T, dtype=np.float64)
     opts.hfun_scal = "absolute"
     opts.hfun_hmax = float(np.nanmax(hv))
     opts.hfun_hmin = float(np.nanmin(hv))
@@ -168,12 +181,67 @@ def remesh_patch(points, cells, polygon, sizing, engine="jigsaw",
     else:
         pp, tt = _remesh_distmesh(bnd, sizing, seed=seed)
 
-    keep_idx = np.unique(t_out.reshape(-1))
-    remap = -np.ones(len(points), dtype=int)
-    remap[keep_idx] = np.arange(len(keep_idx))
-    P = np.vstack([points[keep_idx], pp])
-    T = np.vstack([remap[t_out], np.asarray(tt, dtype=int)
-                   + len(keep_idx)])
+    # conformity: jigsaw may INSERT nodes on the constrained
+    # boundary (few, but each creates a T-junction against the
+    # outer mesh). Fan-split the adjacent outer triangles at
+    # those inserted points so the seam matches node-for-node.
+    if engine == "jigsaw":
+        chain = loops[0]
+        seg_a = points[chain]
+        seg_b = points[np.roll(chain, -1)]
+        ab = seg_b - seg_a
+        ab2 = np.maximum((ab * ab).sum(1), 1e-30)
+        inserted = {}
+        ctree = scipy.spatial.cKDTree(points[chain])
+        dch, _ = ctree.query(pp, k=1)
+        for qi in np.where(dch * 111e3 >= 1.0)[0]:
+            q = pp[qi]
+            tt_ = np.clip(((q - seg_a) * ab).sum(1) / ab2, 0, 1)
+            proj = seg_a + tt_[:, None] * ab
+            dd = np.hypot(*(q - proj).T) * 111e3
+            k = int(np.argmin(dd))
+            if dd[k] < 1.0:
+                inserted.setdefault(k, []).append((tt_[k], qi))
+        if inserted:
+            logger.info(
+                f"remesh_patch: conforming {sum(len(v) for v in inserted.values())} "
+                f"jigsaw boundary insertions into the outer mesh")
+            t_out = np.asarray(t_out)
+            new_tris = []
+            kill = []
+            for k, lst in inserted.items():
+                a, b = chain[k], chain[np.arange(len(chain))[k] - len(chain) + 1]
+                b = chain[(k + 1) % len(chain)]
+                # outer triangle owning edge (a, b)
+                own = np.where(((t_out == a).any(1))
+                               & ((t_out == b).any(1)))[0]
+                if len(own) != 1:
+                    continue
+                tri = t_out[own[0]]
+                c = tri[(tri != a) & (tri != b)][0]
+                kill.append(own[0])
+                seq = [a] + [len(points) + qi for _, qi in
+                             sorted(lst)] + [b]
+                for s0, s1 in zip(seq[:-1], seq[1:]):
+                    new_tris.append([s0, s1, c])
+            if kill:
+                t_out = np.delete(t_out, kill, axis=0)
+                t_out = np.vstack([t_out, np.asarray(new_tris)])
+        P_all = np.vstack([points, pp])
+        keep_idx = np.unique(t_out.reshape(-1))
+        # remap over the EXTENDED point array
+        remap = -np.ones(len(P_all), dtype=int)
+        remap[keep_idx] = np.arange(len(keep_idx))
+        P = np.vstack([P_all[keep_idx], pp])
+        T = np.vstack([remap[t_out], np.asarray(tt, dtype=int)
+                       + len(keep_idx)])
+    else:
+        keep_idx = np.unique(t_out.reshape(-1))
+        remap = -np.ones(len(points), dtype=int)
+        remap[keep_idx] = np.arange(len(keep_idx))
+        P = np.vstack([points[keep_idx], pp])
+        T = np.vstack([remap[t_out], np.asarray(tt, dtype=int)
+                       + len(keep_idx)])
     tr_ = scipy.spatial.cKDTree(P)
     parent = np.arange(len(P))
 
