@@ -748,7 +748,16 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         g.extrapolate = True
         g.build_interpolant()
 
+    # Global (stereo) parent: the working frame of the single loop
+    # is the STEREOGRAPHIC PLANE (as generate_mesh(stereo=True)).
+    # fd receives stereo coordinates (global sdf evaluates them
+    # directly; regional sdfs after to_lat_lon); fh receives LONLAT
+    # (the stereo force/improvement steps convert bar midpoints
+    # before calling fh and apply the plane distortion themselves).
+    _is_global = bool(domain_metadata["global_stereo"])
+
     def fh_comp(q):
+        # q is LONLAT in both regional and global modes
         q = np.asarray(q, dtype=float)
         v = grids[0].eval(q)
         for k in range(1, len(grids)):
@@ -759,54 +768,99 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
 
     def fd_comp(q):
         q = np.asarray(q, dtype=float)
+        if _is_global:
+            # working frame is stereo: memberships and regional
+            # sdfs operate on the lonlat image; the global sdf
+            # (k=0, stereo shoreline) takes the raw coordinates
+            _lon, _lat = to_lat_lon(q[:, 0], q[:, 1])
+            qll = np.column_stack([_lon, _lat])
+        else:
+            qll = q
         d = np.full(len(q), 1.0)
         for k in range(len(domains)):
-            m = _in_region(q, k)
+            if k == 0 and _is_global:
+                m = np.ones(len(q), dtype=bool)
+            else:
+                m = _in_region(qll, k)
             for kd in range(k + 1, len(domains)):
-                m &= ~_in_region(q, kd)
+                m &= ~_in_region(qll, kd)
             if m.any():
-                d[m] = domains[k].eval(q[m])
+                if k == 0 and _is_global:
+                    d[m] = domains[k].eval(q[m])
+                else:
+                    d[m] = domains[k].eval(qll[m])
         return d
 
     # per-box equilateral seeding (meshgen.m:664-748)
     geps_ms = 1e-12 * float(np.amin(h0s))
     rng_pts = []
     for k, (dom, g) in enumerate(zip(domains, grids)):
-        x0, x1, y0, y1 = boxes[k]
         h = h0s[k]
-        dxs = 2.0 / np.sqrt(3.0) * h
-        ys = np.arange(y0, y1 + h, h)
-        rows = []
-        for i, yv in enumerate(ys):
-            # meshgen.m:697-704 builds rows by METRIC length
-            # (m_lldist): in longitude degrees the column step is
-            # dxs/cos(lat); a plain-degree lattice over-seeds by
-            # 1/cos(lat) (x1.32 at 40.75N on Example_3 nest 2)
-            _c = max(np.cos(np.deg2rad(yv)), 0.05)
-            dxr = dxs / _c
-            xs = np.arange(x0 + (0.5 * dxr if i % 2 else 0.0),
-                           x1 + dxr, dxr)
-            rows.append(np.column_stack(
-                [xs, np.full(len(xs), yv)]))
-        p1 = np.vstack(rows)
+        if k == 0 and _is_global:
+            # global parent: the meshgen.m physical sphere lattice
+            # (over-pole rows), rejection at the box's own h0, then
+            # project to the stereo working frame for the fd filter
+            p1 = _global_seed_lattice_ll(h)
+        else:
+            x0, x1, y0, y1 = boxes[k]
+            dxs = 2.0 / np.sqrt(3.0) * h
+            ys = np.arange(y0, y1 + h, h)
+            rows = []
+            for i, yv in enumerate(ys):
+                # meshgen.m:697-704 builds rows by METRIC length
+                # (m_lldist): in longitude degrees the column step is
+                # dxs/cos(lat); a plain-degree lattice over-seeds by
+                # 1/cos(lat) (x1.32 at 40.75N on Example_3 nest 2)
+                _c = max(np.cos(np.deg2rad(yv)), 0.05)
+                dxr = dxs / _c
+                xs = np.arange(x0 + (0.5 * dxr if i % 2 else 0.0),
+                               x1 + dxr, dxr)
+                rows.append(np.column_stack(
+                    [xs, np.full(len(xs), yv)]))
+            p1 = np.vstack(rows)
         # exclude deeper-box regions (they seed themselves finer)
         excl = np.zeros(len(p1), dtype=bool)
         for kd in range(k + 1, len(domains)):
             excl |= _in_region(p1, kd)
         p1 = p1[~excl]
-        p1 = p1[dom.eval(p1) < geps_ms]
-        r0 = np.asarray(g.eval(p1), dtype=float)
-        keep = np.random.rand(len(p1)) < (h / r0) ** 2
-        p1 = p1[keep]
+        if k == 0 and _is_global:
+            # rejection first (cheaper on the full-sphere lattice),
+            # then project and fd-filter in the stereo frame
+            r0 = np.asarray(g.eval(p1), dtype=float)
+            keep = np.random.rand(len(p1)) < (h / r0) ** 2
+            p1 = p1[keep]
+            _sx, _sy = to_stereo(p1[:, 0], p1[:, 1])
+            p1 = np.column_stack([_sx, _sy])
+            p1 = p1[dom.eval(p1) < geps_ms]
+        else:
+            # original order (fd filter, then rejection) — keeps the
+            # validated regional RNG stream (Ex10/Ex13) intact
+            p1 = p1[dom.eval(p1) < geps_ms]
+            r0 = np.asarray(g.eval(p1), dtype=float)
+            keep = np.random.rand(len(p1)) < (h / r0) ** 2
+            p1 = p1[keep]
+            if _is_global:
+                # regional seeds join the stereo working frame
+                _sx, _sy = to_stereo(p1[:, 0], p1[:, 1])
+                p1 = np.column_stack([_sx, _sy])
         logger.info(f"nest #{k}: seeded {len(p1)} points (h0={h})")
         rng_pts.append(p1)
         if k == 0:
             ring = getattr(dom, "boubox_ring", None)
             if ring is not None and len(ring):
+                # the global domain's ring is already in stereo
+                # (the working frame); regional rings are lonlat
                 ring = np.asarray(ring, dtype=float)
                 ring = ring[fd_comp(ring) < geps_ms]
                 if len(ring):
-                    r0 = np.asarray(g.eval(ring), dtype=float)
+                    if _is_global:
+                        _rlon, _rlat = to_lat_lon(ring[:, 0],
+                                                  ring[:, 1])
+                        r0 = np.asarray(g.eval(
+                            np.column_stack([_rlon, _rlat])),
+                            dtype=float)
+                    else:
+                        r0 = np.asarray(g.eval(ring), dtype=float)
                     keep = np.random.rand(len(ring)) < (h / r0) ** 2
                     rng_pts.append(ring[keep])
     p0 = np.vstack(rng_pts)
@@ -817,6 +871,10 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         _kwargs["pfix"] = ms_pfix
         if ms_egfix is not None:
             _kwargs["egfix"] = ms_egfix
+    if _is_global:
+        # the single loop runs in the stereographic plane; returned
+        # coordinates are stereo (convert with to_lat_lon)
+        _kwargs["stereo"] = True
     _union_bbox = (min(b[0] for b in boxes),
                    max(b[1] for b in boxes),
                    min(b[2] for b in boxes),
@@ -1699,47 +1757,46 @@ def _stereo_distortion_dist(lat):
     return res
 
 
+def _global_seed_lattice_ll(h0_deg):
+    """meshgen.m:686-731 global seeding lattice in lonlat: an
+    equilateral lattice with PHYSICAL spacing — rows h0 metres
+    apart along the meridian, per-row column count from the row
+    length / (2/sqrt(3)*h0), odd rows offset half a column.
+
+    Row lengths reproduce the .m QUIRK (meshgen.m:701-707): m_lldist
+    between (-180,lat)-(0,lat)-(180,lat) — points 180 deg of
+    longitude apart, so the GREAT-CIRCLE goes over the pole and rows
+    span 2*(180-2|lat|) degrees, NOT 360*cos(lat) along the
+    parallel. Mid-latitudes are seeded ~25-30% thinner than the
+    parallel length, and every OM2D global golden is built with it
+    (cos(lat) rows gave +27% seeds vs MATLAB on Example_7)."""
+    lon0, lon1, lat0, lat1 = -180.0, 180.0, -89.0, 90.0
+    ny = int(np.floor((lat1 - lat0) / h0_deg))
+    dy = (lat1 - lat0) / ny
+    colsp = 2.0 / np.sqrt(3.0) * h0_deg
+    rows = []
+    for i in range(ny + 1):
+        lat = min(lat0 + i * dy, lat1 - 1e-9)
+        row_len_deg = 2.0 * max(180.0 - 2.0 * abs(lat), 0.0)
+        nx = int(np.floor(row_len_deg / colsp))
+        if nx < 1:
+            continue
+        if i % 2 == 0:
+            # meshgen.m: odd MATLAB rows (ii=1,3,..) are offset
+            dxr = (lon1 - lon0) / nx
+            xs = np.linspace(lon0 + 0.5 * dxr, lon1, nx)
+        else:
+            xs = np.linspace(lon0, lon1, nx)
+        rows.append(np.column_stack([xs, np.full(nx, lat)]))
+    return np.vstack(rows)
+
+
 def _generate_initial_points(min_edge_length, geps, bbox, fh, fd, pfix, stereo=False):
     """Create initial distribution in bounding box (equilateral triangles)"""
     if stereo:
-        # meshgen.m:686-731 global seeding: an equilateral lattice
-        # with PHYSICAL spacing — rows h0 metres apart along the
-        # meridian, per-row column count from the parallel's
-        # great-circle length / (2/sqrt(3)*h0) (so columns thin out
-        # as cos(lat)), odd rows offset half a column. Rejection is
-        # the plain (h0/fh)^2 — NO stereographic distortion factor:
-        # both the lattice and fh are physical. The previous
-        # square-degree lattice + 2/(1+cos(lat)) rejection
-        # over-seeded Example_7 1.9x (2.74M vs MATLAB's 1.46M).
-        lon0, lon1, lat0, lat1 = -180.0, 180.0, -89.0, 90.0
-        ny = int(np.floor((lat1 - lat0) / min_edge_length))
-        dy = (lat1 - lat0) / ny
-        colsp = 2.0 / np.sqrt(3.0) * min_edge_length
-        rows = []
-        for i in range(ny + 1):
-            lat = min(lat0 + i * dy, lat1 - 1e-9)
-            # meshgen.m:701-707 row length: m_lldist between
-            # (-180,lat)-(0,lat) plus (0,lat)-(180,lat). Each pair is
-            # 180 deg of longitude apart, so the GREAT-CIRCLE goes
-            # over the pole: each half spans (180 - 2|lat|) degrees,
-            # NOT 180*cos(lat) along the parallel. Mid-latitudes are
-            # therefore seeded ~25-30% thinner than the parallel
-            # length (an upstream quirk — the intent was clearly the
-            # parallel — but every OM2D global golden is seeded with
-            # it; cos(lat) rows gave +27% seeds vs MATLAB on
-            # Example_7: 1.86M vs 1.46M).
-            row_len_deg = 2.0 * max(180.0 - 2.0 * abs(lat), 0.0)
-            nx = int(np.floor(row_len_deg / colsp))
-            if nx < 1:
-                continue
-            if i % 2 == 0:
-                # meshgen.m: odd MATLAB rows (ii=1,3,..) are offset
-                dxr = (lon1 - lon0) / nx
-                xs = np.linspace(lon0 + 0.5 * dxr, lon1, nx)
-            else:
-                xs = np.linspace(lon0, lon1, nx)
-            rows.append(np.column_stack([xs, np.full(nx, lat)]))
-        p0 = np.vstack(rows)
+        # Rejection is the plain (h0/fh)^2 — NO stereographic
+        # distortion factor: both the lattice and fh are physical.
+        p0 = _global_seed_lattice_ll(float(np.amin(min_edge_length)))
         r0 = np.asarray(fh(p0), dtype=float)
         x, y = to_stereo(p0[:, 0], p0[:, 1])
         p = np.column_stack([x, y])
