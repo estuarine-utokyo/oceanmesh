@@ -97,7 +97,14 @@ def make_bc_auto(
             raise ValueError("distance classifier requires shoreline")
         from scipy.spatial import cKDTree
 
-        land_pts = np.asarray(shoreline.mainland, dtype=float)
+        # makens.m:1469-1476: land = [gdat.mainland; gdat.inner] --
+        # the distance criterion measures against mainland AND inner
+        # (island/breakwater) shorelines
+        parts = [np.asarray(shoreline.mainland, dtype=float)]
+        inner = np.asarray(getattr(shoreline, "inner", []), dtype=float)
+        if inner.size:
+            parts.append(inner.reshape(-1, 2))
+        land_pts = np.vstack(parts)
         land_pts = land_pts[~np.isnan(land_pts[:, 0])]
         tree = cKDTree(land_pts)
         if dist_lim is None:
