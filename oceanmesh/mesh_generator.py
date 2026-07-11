@@ -560,20 +560,13 @@ def _sanitize_smoothed_sizing_grid(i, el):
     if hmin is not None and np.isfinite(hmin) and hmin > 0:
         return
 
-    vals = el.values
-    if np.ma.isMaskedArray(vals):
-        vals = np.ma.filled(vals, np.nan)
-    vals = np.asarray(vals)
-    pos = vals[np.isfinite(vals) & (vals > 0)]
-    if pos.size > 0:
-        el.hmin = float(np.nanmin(pos))
-        logger.warning(
-            f"Sizing grid #{i} had invalid hmin; recomputed fallback hmin={el.hmin:.3f}"
-        )
-        return
-
+    # NO automatic repair (user policy 2026-07-11): hmin anchors the
+    # seeding rejection; silently substituting the grid minimum can
+    # complete with a different mesh than intended.
     raise ValueError(
-        f"Sizing grid #{i} contains no positive values to determine a minimum edge length."
+        f"Sizing grid #{i} has no valid hmin ({hmin!r}). Set "
+        "grid.hmin to the nest's h0 (finalize_sizing does this), "
+        "or pass min_edge_length explicitly."
     )
 
 
@@ -1429,27 +1422,22 @@ def _unpack_sizing(edge_length, opts):
     if isinstance(edge_length, Grid):
         fh = edge_length.eval
         min_edge_length = edge_length.hmin
-        # Defensive: if hmin is invalid, recompute from grid values
+        # NO automatic repair (user policy 2026-07-11): hmin anchors
+        # seeding and the geps/ttol gates; a silently substituted
+        # grid minimum can complete with a different mesh than
+        # intended.
         if (
             min_edge_length is None
             or not np.isfinite(min_edge_length)
             or min_edge_length <= 0
         ):
-            vals = edge_length.values
-            if np.ma.isMaskedArray(vals):
-                vals = np.ma.filled(vals, np.nan)
-            vals = np.asarray(vals)
-            pos = vals[np.isfinite(vals) & (vals > 0)]
-            if pos.size > 0:
-                min_edge_length = float(np.nanmin(pos))
-                edge_length.hmin = min_edge_length
-                logger.warning(
-                    f"Edge length grid had invalid hmin; recomputed fallback min_edge_length={min_edge_length:.3f}"
-                )
-            else:
-                raise ValueError(
-                    "Edge length grid contains no positive values to determine a minimum edge length."
-                )
+            raise ValueError(
+                "The edge_length Grid carries no valid hmin "
+                f"({min_edge_length!r}). Set grid.hmin to the h0 "
+                "used to build the sizing (finalize_sizing does "
+                "this), or pass min_edge_length= explicitly to "
+                "generate_mesh."
+            )
     elif callable(edge_length):
         fh = edge_length
         min_edge_length = opts["min_edge_length"]

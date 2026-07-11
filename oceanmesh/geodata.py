@@ -300,19 +300,30 @@ def _netcdf_coord_steps(dem_path):
             float(np.median(np.abs(np.diff(y)))))
 
 
-def _read_dem_array_and_meta(dem_path, bbox, crs, region_bbox, region_crs):
+def _read_dem_array_and_meta(dem_path, bbox, crs, region_bbox, region_crs,
+                             nc_reader="gdal"):
     # subset cache: GDAL's netCDF driver row-reads windows, which
     # is brutally slow on cold Lustre (~80 s for a 400 MB window,
     # 97% of JBAY sizing time under cProfile). Cache the decoded
     # subset keyed by (file, mtime, bbox) — numerically identical.
     import hashlib as _hl
 
+    if nc_reader not in ("gdal", "coords", "gdal-unchecked"):
+        raise ValueError(
+            f"nc_reader={nc_reader!r} is not a valid option. "
+            "Choose 'gdal' (default; rasterio/GDAL georeference, "
+            "sanity-checked against the file's own coordinates), "
+            "'coords' (subset by the file's own 1-D lon/lat "
+            "coordinate variables), or 'gdal-unchecked' (trust the "
+            "GDAL georeference explicitly, skipping the check)."
+        )
+
     _cache_file = None
     try:
         _mt = Path(dem_path).stat().st_mtime_ns
         _key = _hl.md5(
             f"{dem_path}|{_mt}|{bbox}|{crs}|{region_bbox}|"
-            f"{region_crs}".encode()
+            f"{region_crs}|{nc_reader}".encode()
         ).hexdigest()[:16]
         _cdir = Path(dem_path).parent / ".om_dem_cache"
         _cdir.mkdir(exist_ok=True)
@@ -385,66 +396,107 @@ def _read_dem_array_and_meta(dem_path, bbox, crs, region_bbox, region_crs):
                     bbox_out = region_bbox
                     topobathy_xy = np.transpose(topobathy, (1, 0))
                 else:
-                    if dem_path.suffix.lower() in {".nc", ".nc4"}:
+                    # NO automatic fallback (user policy 2026-07-11)
+                    if (nc_reader == "coords"
+                            and dem_path.suffix.lower() in {".nc", ".nc4"}):
                         fb = _try_subset_netcdf_with_xarray(
                             dem_path, region_bbox_src, crs
                         )
-                        if fb is not None:
-                            bbox_out, dx_fb, dy_fb, topobathy_xy = fb
-                            meta["transform"] = Affine(
-                                dx_fb, 0, bbox_out[0], 0, -dy_fb, bbox_out[3]
-                            )
-                        else:
+                        if fb is None:
                             raise ValueError(
-                                "Transformed DEM clipping bbox does not overlap raster bounds. "
-                                f"Region bbox (in raster CRS)={region_bbox_src}, raster bounds={ds_bbox_conv}."
+                                "nc_reader='coords' was requested but "
+                                f"{dem_path.name} does not match the "
+                                "simple 1-D lon/lat coordinate pattern."
                             )
+                        bbox_out, dx_fb, dy_fb, topobathy_xy = fb
+                        meta["transform"] = Affine(
+                            dx_fb, 0, bbox_out[0], 0, -dy_fb, bbox_out[3]
+                        )
                     else:
+                        _hint = ""
+                        if dem_path.suffix.lower() in {".nc", ".nc4"}:
+                            _hint = (
+                                " If GDAL's georeference of this "
+                                "NetCDF is wrong, pass "
+                                "nc_reader='coords' to DEM(...) to "
+                                "subset by the file's own coordinate "
+                                "variables."
+                            )
                         raise ValueError(
                             "Transformed DEM clipping bbox does not overlap raster bounds. "
                             f"Region bbox (in raster CRS)={region_bbox_src}, raster bounds={ds_bbox_conv}."
+                            + _hint
                         )
+            elif nc_reader == "coords":
+                # explicit user opt-in: subset by the file's own 1-D
+                # coordinate variables instead of GDAL's georeference
+                _coord_fb = _try_subset_netcdf_with_xarray(
+                    dem_path, region_bbox_src, crs)
+                if _coord_fb is None:
+                    raise ValueError(
+                        f"nc_reader='coords' was requested for "
+                        f"{dem_path.name}, but the file does not "
+                        "match the simple pattern (a 2-D variable "
+                        "with 1-D lon/lat coordinate variables). "
+                        "Options: (a) use the default "
+                        "nc_reader='gdal'; (b) convert the file to "
+                        "a conventional lon/lat NetCDF raster."
+                    )
+                bbox_out, dx_fb, dy_fb, topobathy_xy = _coord_fb
+                meta["transform"] = Affine(
+                    dx_fb, 0, bbox_out[0], 0, -dy_fb, bbox_out[3])
+                logger.info(
+                    "nc_reader='coords': %s subset %s at (%.6g, %.6g)",
+                    dem_path.name, topobathy_xy.shape, dx_fb, dy_fb)
             else:
                 # GDAL's netCDF driver mis-georeferences some plain
                 # lon/lat files (SRTM15_kanto_15s: 912x744 cells at
                 # 15 arcsec exposed as a 360-deg-wide raster, so the
                 # Tokyo Bay nest windowed to 3x5 pixels and the bay
-                # lost all bathymetry). When the GDAL pixel size
-                # disagrees with the file's own 1-D coordinate
-                # spacing by >1%, trust the coordinates.
-                _coord_fb = None
-                if dem_path.suffix.lower() in {".nc", ".nc4"}:
+                # silently lost all bathymetry). NO automatic
+                # fallback (user policy 2026-07-11): when the GDAL
+                # pixel size disagrees with the file's own 1-D
+                # coordinate spacing, STOP and let the user choose.
+                if (nc_reader == "gdal"
+                        and dem_path.suffix.lower() in {".nc", ".nc4"}):
                     _cs = _netcdf_coord_steps(dem_path)
                     if _cs is not None:
                         _dxg = abs(float(src.transform[0]))
                         _dyg = abs(float(src.transform[4]))
                         if (abs(_dxg - _cs[0]) > 0.01 * _cs[0]
                                 or abs(_dyg - _cs[1]) > 0.01 * _cs[1]):
-                            logger.warning(
-                                "GDAL georeference (%g, %g) disagrees"
-                                " with the file's coordinate spacing "
-                                "(%g, %g); using the coordinate-based"
-                                " subset", _dxg, _dyg, _cs[0], _cs[1])
-                            _coord_fb = _try_subset_netcdf_with_xarray(
-                                dem_path, region_bbox_src, crs)
-                if _coord_fb is not None:
-                    bbox_out, dx_fb, dy_fb, topobathy_xy = _coord_fb
-                    meta["transform"] = Affine(
-                        dx_fb, 0, bbox_out[0], 0, -dy_fb, bbox_out[3])
-                else:
-                    bounds_for_window = (xmin, ymin, xmax, ymax)
-                    try:
-                        window = from_bounds(
-                            *bounds_for_window, transform=src.transform)
-                    except Exception as e:
-                        raise RuntimeError(
-                            "Failed to create window for DEM subset. "
-                            f"Bounds={bounds_for_window}, "
-                            f"transform={src.transform}."
-                        ) from e
-                    topobathy = src.read(1, window=window, masked=True)
-                    topobathy_xy = np.transpose(topobathy, (1, 0))
-                    bbox_out = (xmin, xmax, ymin, ymax)
+                            raise ValueError(
+                                f"GDAL reads {dem_path.name} with a "
+                                f"pixel size of ({_dxg:.6g}, "
+                                f"{_dyg:.6g}), but the file's own "
+                                "1-D coordinate variables are spaced "
+                                f"({_cs[0]:.6g}, {_cs[1]:.6g}) — the "
+                                "GDAL georeference is unreliable for "
+                                "this file and the requested subset "
+                                "would be wrong (e.g. a 3x5-pixel "
+                                "window instead of 300x267). "
+                                "Options: (a) pass nc_reader='coords'"
+                                " to DEM(...) to subset by the "
+                                "file's own coordinates; (b) rewrite "
+                                "the file with CF-compliant "
+                                "georeferencing so GDAL reads it "
+                                "correctly; (c) pass "
+                                "nc_reader='gdal-unchecked' to trust "
+                                "the GDAL georeference explicitly."
+                            )
+                bounds_for_window = (xmin, ymin, xmax, ymax)
+                try:
+                    window = from_bounds(
+                        *bounds_for_window, transform=src.transform)
+                except Exception as e:
+                    raise RuntimeError(
+                        "Failed to create window for DEM subset. "
+                        f"Bounds={bounds_for_window}, "
+                        f"transform={src.transform}."
+                    ) from e
+                topobathy = src.read(1, window=window, masked=True)
+                topobathy_xy = np.transpose(topobathy, (1, 0))
+                bbox_out = (xmin, xmax, ymin, ymax)
 
         # Warn if user requested output CRS different from raster CRS (no reprojection performed here)
         if (
@@ -643,8 +695,16 @@ def _cull_small_features(polys, boubox, h0, island_mult=4.0,
         bpoly = _Pg(b)
         if not bpoly.is_valid:
             bpoly = bpoly.buffer(0)
-    except Exception:
-        return polys
+    except Exception as _err:
+        # NO silent skip (user policy 2026-07-11): skipping the
+        # Read_shapefile-parity culling changes the meshing input.
+        raise ValueError(
+            "Could not build the domain polygon for the small-"
+            "feature cull (Read_shapefile.m parity); the boubox is "
+            f"degenerate ({len(b)} finite vertices). Fix the domain "
+            "bbox/boubox, or pass minimum_area_mult=0 to Shoreline "
+            "to disable the cull explicitly."
+        ) from _err
     a_island = island_mult * h0 * h0
     a_main = mainland_mult * h0 * h0
     out = []
@@ -1852,9 +1912,16 @@ class DEM(Grid):
     Digitial elevation model read in from a tif or NetCDF file
     """
 
-    def __init__(self, dem, crs="EPSG:4326", bbox=None, extrapolate=False, backup=None):
+    def __init__(self, dem, crs="EPSG:4326", bbox=None, extrapolate=False,
+                 backup=None, nc_reader="gdal"):
         """Read in a DEM from a tif or NetCDF file for later use
         in developing mesh sizing functions.
+
+        nc_reader: 'gdal' (default) reads through rasterio/GDAL;
+        'coords' subsets NetCDF files by their own 1-D lon/lat
+        coordinate variables (explicit opt-in for files whose GDAL
+        georeference is unreliable — the reader STOPS with an error
+        instead of falling back automatically).
 
         Parameters
         ----------
@@ -1886,6 +1953,7 @@ class DEM(Grid):
                 crs=crs,
                 region_bbox=region_bbox,
                 region_crs=region_crs,
+                nc_reader=nc_reader,
             )
             self.meta = meta
 

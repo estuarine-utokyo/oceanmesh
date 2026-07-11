@@ -32,7 +32,10 @@ def test_edgefx():
 def test_edgefx_elevation_bounds():
     region = om.Region(extent=(-95.24, -95.21, 28.95, 29.00), crs=4326)
 
-    dem = om.DEM(dfname, bbox=region, crs=4326)
+    # galv_sub.nc fixture: GDAL georeference known-inconsistent
+    # with the file coords; tests validate sizing math only
+    dem = om.DEM(dfname, bbox=region, crs=4326,
+                 nc_reader="gdal-unchecked")
 
     sho = om.Shoreline(fname, region.bbox, 0.005)
     sho.plot()

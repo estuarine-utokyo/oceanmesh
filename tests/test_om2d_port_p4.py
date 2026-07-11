@@ -114,7 +114,8 @@ def test_contour_to_shapefile(tmp_path):
     from oceanmesh import Region
 
     reg = Region((-95.16, -95.02, 29.51, 29.61), 4326)
-    dem = om.DEM("tests/galv_sub.nc", bbox=reg)
+    dem = om.DEM("tests/galv_sub.nc", bbox=reg,
+                 nc_reader="gdal-unchecked")
     out = tmp_path / "fp.shp"
     om.contour_to_shapefile(dem, level=0.0, out_path=str(out),
                             min_length=3)

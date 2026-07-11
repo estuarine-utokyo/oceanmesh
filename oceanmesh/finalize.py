@@ -292,6 +292,7 @@ def finalize_sizing(
     max_edge_length=None,
     max_edge_length_nearshore=None,
     gradation=0.15,
+    gradation_solver="limgrad",
     courant=None,
     weirs=None,
     verbose=True,
@@ -381,8 +382,27 @@ def finalize_sizing(
 
     grad = np.asarray(gradation, dtype=float)
     sz = (*grid.values.shape, 1)
+    # NO automatic solver fallback (user policy 2026-07-11): the
+    # OM2D-parity solver is limgradStruct (numba). If numba is
+    # unavailable, STOP — the legacy gradient_limit solver differs
+    # (no per-row cos(lat) edge lengths) and must be an explicit
+    # choice via gradation_solver='legacy'.
+    if gradation_solver not in ("limgrad", "legacy"):
+        raise ValueError(
+            f"gradation_solver={gradation_solver!r} is not valid; "
+            "choose 'limgrad' (OM2D parity, default) or 'legacy'."
+        )
+    if gradation_solver == "limgrad" and not _HAVE_LIMGRAD_STRUCT:
+        raise ImportError(
+            "The OM2D-parity gradation solver (limgradStruct) "
+            "requires numba, which failed to import. Options: "
+            "(a) install it: mamba install -c conda-forge numba; "
+            "(b) pass gradation_solver='legacy' to finalize_sizing "
+            "to use the previous gradient_limit solver explicitly "
+            "(NOT OM2D parity: no per-row cos(lat) edge lengths)."
+        )
     if grad.ndim == 0:
-        if _HAVE_LIMGRAD_STRUCT:
+        if gradation_solver == "limgrad":
             limited = _limgrad_struct(grid, grad).flatten("F")
         else:
             limited = gradient_limit(
@@ -394,7 +414,7 @@ def finalize_sizing(
             raise ValueError("banded gradation needs dem")
         z = _dem_on_grid(grid, dem)
         dfdx = elevation_bands(grad, z, default=float(np.nanmax(grad[:, 0])))
-        if _HAVE_LIMGRAD_STRUCT:
+        if gradation_solver == "limgrad":
             # same limgradStruct solver as the scalar branch —
             # limgradStruct.m natively supports spatially variable
             # fdfdx (bound taken from the LOWER node); routing the

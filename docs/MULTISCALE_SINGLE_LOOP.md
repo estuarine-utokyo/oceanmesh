@@ -81,7 +81,9 @@ band-CDT seam (area-exact, verified non-manifold-free).
 - `engine="jigsaw"` (default): jigsawpy — the successor of the
   mesh2d engine OM2D calls. OPTIONAL dependency, not bundled
   (non-OSI license): `mamba install -c conda-forge jigsawpy
-  jigsaw`. Falls back to "distmesh" automatically when absent.
+  jigsaw`. When absent, remesh_patch STOPS with an ImportError
+  that shows the install command and the explicit alternative
+  (engine="distmesh") — no automatic fallback.
 - `engine="distmesh"`: this package's OM2D-parity generator with
   the patch boundary held fixed; statistically closest to the
   mesh2d output.
