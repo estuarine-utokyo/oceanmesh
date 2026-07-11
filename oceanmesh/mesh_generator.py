@@ -785,6 +785,10 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         return d
 
     # per-box equilateral seeding (meshgen.m:664-748)
+    # seed the RNG here too: the rejection draws below run BEFORE
+    # generate_mesh seeds it, so multiscale runs were otherwise
+    # non-reproducible (~0.3% seed-count noise between runs)
+    np.random.seed(int(opts["seed"]))
     geps_ms = 1e-12 * float(np.amin(h0s))
     rng_pts = []
     for k, (dom, g) in enumerate(zip(domains, grids)):
