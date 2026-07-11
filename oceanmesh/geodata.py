@@ -267,6 +267,30 @@ def _try_subset_netcdf_with_xarray(dem_path, bbox_vals, crs_str):
     return _xr_subset_to_outputs(sub, xname, yname)
 
 
+def _netcdf_coord_steps(dem_path):
+    """Median 1-D coordinate spacings (dx, dy) of a NetCDF raster,
+    or None when the simple lon/lat coordinate pattern is absent."""
+    ds = _xr_open_dataset(dem_path)
+    if ds is None:
+        return None
+    da = _xr_pick_first_raster_data_array(ds)
+    if da is None:
+        return None
+    da = _xr_reduce_to_2d(da)
+    xname = _xr_pick_coord_name(
+        ds, da, ["x", "lon", "longitude", "Long", "LONGITUDE"])
+    yname = _xr_pick_coord_name(
+        ds, da, ["y", "lat", "latitude", "Lat", "LATITUDE"])
+    if xname is None or yname is None:
+        return None
+    x = np.asarray(da.coords[xname].values)
+    y = np.asarray(da.coords[yname].values)
+    if x.ndim != 1 or y.ndim != 1 or len(x) < 2 or len(y) < 2:
+        return None
+    return (float(np.median(np.abs(np.diff(x)))),
+            float(np.median(np.abs(np.diff(y)))))
+
+
 def _read_dem_array_and_meta(dem_path, bbox, crs, region_bbox, region_crs):
     # subset cache: GDAL's netCDF driver row-reads windows, which
     # is brutally slow on cold Lustre (~80 s for a 400 MB window,
@@ -372,17 +396,46 @@ def _read_dem_array_and_meta(dem_path, bbox, crs, region_bbox, region_crs):
                             f"Region bbox (in raster CRS)={region_bbox_src}, raster bounds={ds_bbox_conv}."
                         )
             else:
-                bounds_for_window = (xmin, ymin, xmax, ymax)
-                try:
-                    window = from_bounds(*bounds_for_window, transform=src.transform)
-                except Exception as e:
-                    raise RuntimeError(
-                        "Failed to create window for DEM subset. "
-                        f"Bounds={bounds_for_window}, transform={src.transform}."
-                    ) from e
-                topobathy = src.read(1, window=window, masked=True)
-                topobathy_xy = np.transpose(topobathy, (1, 0))
-                bbox_out = (xmin, xmax, ymin, ymax)
+                # GDAL's netCDF driver mis-georeferences some plain
+                # lon/lat files (SRTM15_kanto_15s: 912x744 cells at
+                # 15 arcsec exposed as a 360-deg-wide raster, so the
+                # Tokyo Bay nest windowed to 3x5 pixels and the bay
+                # lost all bathymetry). When the GDAL pixel size
+                # disagrees with the file's own 1-D coordinate
+                # spacing by >1%, trust the coordinates.
+                _coord_fb = None
+                if dem_path.suffix.lower() in {".nc", ".nc4"}:
+                    _cs = _netcdf_coord_steps(dem_path)
+                    if _cs is not None:
+                        _dxg = abs(float(src.transform[0]))
+                        _dyg = abs(float(src.transform[4]))
+                        if (abs(_dxg - _cs[0]) > 0.01 * _cs[0]
+                                or abs(_dyg - _cs[1]) > 0.01 * _cs[1]):
+                            logger.warning(
+                                "GDAL georeference (%g, %g) disagrees"
+                                " with the file's coordinate spacing "
+                                "(%g, %g); using the coordinate-based"
+                                " subset", _dxg, _dyg, _cs[0], _cs[1])
+                            _coord_fb = _try_subset_netcdf_with_xarray(
+                                dem_path, region_bbox_src, crs)
+                if _coord_fb is not None:
+                    bbox_out, dx_fb, dy_fb, topobathy_xy = _coord_fb
+                    meta["transform"] = Affine(
+                        dx_fb, 0, bbox_out[0], 0, -dy_fb, bbox_out[3])
+                else:
+                    bounds_for_window = (xmin, ymin, xmax, ymax)
+                    try:
+                        window = from_bounds(
+                            *bounds_for_window, transform=src.transform)
+                    except Exception as e:
+                        raise RuntimeError(
+                            "Failed to create window for DEM subset. "
+                            f"Bounds={bounds_for_window}, "
+                            f"transform={src.transform}."
+                        ) from e
+                    topobathy = src.read(1, window=window, masked=True)
+                    topobathy_xy = np.transpose(topobathy, (1, 0))
+                    bbox_out = (xmin, xmax, ymin, ymax)
 
         # Warn if user requested output CRS different from raster CRS (no reprojection performed here)
         if (
