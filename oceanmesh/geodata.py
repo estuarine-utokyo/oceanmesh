@@ -201,6 +201,15 @@ def _xr_subset_to_outputs(sub, xname, yname):
 
     x_sub = np.asarray(sub.coords[xname].values, dtype=float)
     y_sub = np.asarray(sub.coords[yname].values, dtype=float)
+    # contract: (nx, ny) with x WEST-first and y NORTH-first (the
+    # rasterio row order) — DEM.__init__'s np.fliplr() then restores
+    # ascending latitude. Files store latitude ascending, so without
+    # this flip the DEM came out upside down (Tokyo Bay nest read
+    # the Sagami trough under the north-Kanto plain).
+    if len(x_sub) > 1 and x_sub[1] < x_sub[0]:
+        topobathy_xy = topobathy_xy[::-1, :]
+    if len(y_sub) > 1 and y_sub[1] > y_sub[0]:
+        topobathy_xy = topobathy_xy[:, ::-1]
     dx = _xr_median_spacing(x_sub)
     dy = _xr_median_spacing(y_sub)
     if not (np.isfinite(dx) and np.isfinite(dy) and dx > 0 and dy > 0):
