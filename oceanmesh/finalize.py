@@ -67,7 +67,30 @@ def wave_celerity(depth, wave_amplitude=1.0):
 
 
 def _dem_on_grid(grid, dem):
+    """Bathymetry on the grid's lattice the way edgefx.m sees it:
+    the DEM is DECIMATED by ceil(grid_dx/dem_dx) per axis (geodata.m
+    ParseDEM stride) and the decimated raster's linear interpolant
+    is evaluated on the lattice (CreateStructGrid). Sampling the
+    native DEM interpolant instead picks up extremes the .m never
+    sees — on the Tokyo Bay outer nest the deepest-trench celerity
+    made the automatic dt 34.4 s vs MATLAB's 40.0 s, lowering the
+    deep-water CFL floor and adding +28% nodes."""
     xg, yg = grid.create_grid()
+    try:
+        sx = max(1, int(np.ceil(float(grid.dx) / float(dem.dx))))
+        sy = max(1, int(np.ceil(float(grid.dy) / float(dem.dy))))
+    except (AttributeError, TypeError, ZeroDivisionError):
+        sx = sy = 1
+    if sx > 1 or sy > 1:
+        from scipy.interpolate import RegularGridInterpolator
+
+        xv, yv = dem.create_vectors()
+        zdec = np.asarray(dem.values, dtype=float)[::sx, ::sy]
+        F = RegularGridInterpolator(
+            (xv[::sx], yv[::sy]), zdec, method="linear",
+            bounds_error=False, fill_value=None,
+        )
+        return np.asarray(F((xg, yg)), dtype=float)
     z = np.asarray(
         dem.eval(np.column_stack([xg.ravel(), yg.ravel()]))
     ).reshape(xg.shape)
