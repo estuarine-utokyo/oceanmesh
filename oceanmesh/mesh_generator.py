@@ -1698,7 +1698,16 @@ def _maybe_om2d_clean(p, t, opts, pfix, unproject=None):
         from .clean import om2d_default_clean
 
         keep = pfix if pfix is not None and len(pfix) else None
-        p, t = om2d_default_clean(p, t, pfix=keep)
+        # CDT-constrained edges (egfix indexes into pfix): hand the
+        # clean their coordinate pairs so the db deletion loop keeps
+        # the constrained line intact
+        egfix = opts.get("egfix")
+        pairs = None
+        if keep is not None and egfix is not None and len(egfix):
+            eg = np.asarray(egfix, dtype=int)
+            kp = np.asarray(keep, dtype=float)
+            pairs = np.stack([kp[eg[:, 0]], kp[eg[:, 1]]], axis=1)
+        p, t = om2d_default_clean(p, t, pfix=keep, egfix_pairs=pairs)
     if unproject is not None:
         p = unproject(p)
     return p, t

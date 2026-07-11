@@ -40,17 +40,28 @@ def area_length_quality(points, cells):
     return 4.0 * np.sqrt(3.0) * area / den
 
 
-def collapse_thin_triangles(points, cells, min_qual=0.10):
+def collapse_thin_triangles(points, cells, min_qual=0.10, pfix=None):
     """Exact port of utilities/collapse_thin_triangles.m: while any
     element has MEAN-RATIO quality (gettrimeshquan qm, ~simp_qual)
     below ``min_qual``, collapse its shortest edge; REVERT collapses
     that would create index-degenerate elements
-    (collapse_thin_triangles.m:33-38)."""
+    (collapse_thin_triangles.m:33-38).
+
+    ``pfix`` (fork feature, no .m counterpart — the .m has no CDT
+    constraints to protect): coordinates of protected vertices.
+    A protected vertex may be a merge TARGET but is never removed;
+    a collapse between two protected vertices is skipped."""
     from .fix_mesh import fix_mesh as _fix_mesh
     from .fix_mesh import simp_qual
 
     p = np.array(points, dtype=float)
     t = np.array(cells, dtype=int)
+    protected = frozenset()
+    if pfix is not None and len(pfix) > 0:
+        from scipy.spatial import cKDTree
+
+        _, _idx = cKDTree(p).query(np.asarray(pfix, dtype=float))
+        protected = frozenset(int(v) for v in np.atleast_1d(_idx))
     qm = simp_qual(p, t)
     kount = 0
     guard = 0
@@ -66,6 +77,12 @@ def collapse_thin_triangles(points, cells, min_qual=0.10):
         evec = p[ee[:, 0]] - p[ee[:, 1]]
         meid = int(np.argmin((evec**2).sum(1)))
         rm, keep = int(ee[meid, 0]), int(ee[meid, 1])
+        if rm in protected:
+            if keep in protected:
+                # never collapse a constrained edge
+                qm[tid] = 1.0
+                continue
+            rm, keep = keep, rm
         t_old = t.copy()
         t = np.delete(t, tid, axis=0)
         t[t == rm] = keep

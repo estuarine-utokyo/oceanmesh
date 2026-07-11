@@ -73,7 +73,7 @@ def mesh_clean(
 
 def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
                        dj_cutoff=0.25, max_passes=20, pfix=None,
-                       smooth=True, con=9):
+                       smooth=True, con=9, egfix_pairs=None):
     """OM2D ``msh.clean('default')`` as invoked by ``meshgen.build``.
 
     Order (msh.m:1155-1248): boundary-quality deletion loop (db) ->
@@ -82,6 +82,13 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
     below mqa(=db) and the element count keeps changing.
     ``Fix_single_connec_edge_elements`` is a no-op in OM2D's default
     (sc_maxit=0) and is deliberately not run here.
+
+    ``egfix_pairs`` (K, 2, 2): coordinate pairs of CDT-constrained
+    edges. The db deletion loop skips any face that carries a
+    constrained edge — deleting it removes the edge from the mesh
+    and the boundary detours around the opposite vertex. Faces that
+    merely TOUCH a constrained node stay deletable (removing a cap
+    sliver exposes the constrained edge; conformity is untouched).
     """
     from scipy.spatial import cKDTree
 
@@ -124,6 +131,21 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             # pfix only selects the smoother and rides the
             # recursion (msh.m:1133,1219,1246)
             bad = touching & (q < min_qual_bound)
+            if egfix_pairs is not None and bad.any():
+                ep = np.asarray(egfix_pairs, dtype=float)
+                _, i0 = cKDTree(vertices).query(ep[:, 0, :])
+                _, i1 = cKDTree(vertices).query(ep[:, 1, :])
+                constrained = {tuple(sorted((int(a), int(b))))
+                               for a, b in zip(i0, i1)}
+                fa = np.sort(faces, axis=1)
+                carries = np.zeros(len(faces), dtype=bool)
+                for k, (a, b) in enumerate(
+                        ((0, 1), (0, 2), (1, 2))):
+                    carries |= np.fromiter(
+                        ((int(x), int(y)) in constrained
+                         for x, y in zip(fa[:, a], fa[:, b])),
+                        dtype=bool, count=len(fa))
+                bad &= ~carries
             if not bad.any():
                 break
             logger.info(
@@ -139,9 +161,10 @@ def om2d_default_clean(vertices, faces, min_qual_bound=0.25,
             )
             return v_in, f_in
         # 2. sliver collapse at the same threshold (msh.m:1186-1187)
-        # — unconditional in the .m, pfix or not
+        # — unconditional in the .m; the fork protects pfix nodes
+        # (CDT-constrained points must not be merged away)
         vertices, faces = collapse_thin_triangles(
-            vertices, faces, min_qual=min_qual_bound
+            vertices, faces, min_qual=min_qual_bound, pfix=pfix
         )
         if len(faces) == 0:
             logger.warning(
