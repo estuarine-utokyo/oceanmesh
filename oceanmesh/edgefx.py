@@ -1373,6 +1373,7 @@ def multiscale_sizing_function(
     enforce_min=True,
     domain_metadata=None,
     gradation=0.15,
+    boubox_rings=None,
 ):
     """Given a list of mesh size functions in a hierarchy
     w.r.t. to minimum mesh size (largest -> smallest),
@@ -1443,7 +1444,8 @@ def multiscale_sizing_function(
         vals = np.array(coarse.values, dtype=float, copy=True)
         xv, yv = coarse.create_vectors()
         pasted = False
-        for finer in list_of_grids[idx1 + 1:]:
+        for idx2 in range(idx1 + 1, len(list_of_grids)):
+            finer = list_of_grids[idx2]
             fx0, fx1, fy0, fy1 = finer.bbox
             dxc = float(coarse.dx)
             dyc = float(getattr(coarse, "dy", coarse.dx) or coarse.dx)
@@ -1459,6 +1461,26 @@ def multiscale_sizing_function(
             ).reshape(X.shape)
             inside = ((X >= fx0) & (X <= fx1)
                       & (Y >= fy0) & (Y <= fy1))
+            # smooth_outer.m:22 masks the paste with the finer
+            # nest's BOUBOX POLYGON (inpoly), not its bounding
+            # rectangle. Equivalent for rectangular nests, but a
+            # polygon nest (Tokyo Bay's pentagon) otherwise leaks
+            # its fine sizes across the whole rectangle hull —
+            # a 2-3x-too-fine shadow ringing the nest.
+            _ring = (boubox_rings[idx2]
+                     if boubox_rings is not None
+                     and idx2 < len(boubox_rings) else None)
+            if _ring is not None and len(_ring) > 3:
+                from . import edges as _edges
+                from .geometry import inpoly2 as _inpoly2
+
+                _part = np.vstack([np.asarray(_ring, float),
+                                   [[np.nan, np.nan]]])
+                _e = _edges.get_poly_edges(_part)
+                _ins, _ = _inpoly2(
+                    np.column_stack([X.ravel(), Y.ravel()]),
+                    np.nan_to_num(_part), _e)
+                inside &= _ins.reshape(X.shape)
             ht = np.where(inside, ht, np.nan)
             sub = vals[np.ix_(inx, iny)]
             vals[np.ix_(inx, iny)] = np.where(

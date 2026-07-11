@@ -701,6 +701,11 @@ def generate_multiscale_mesh(domains, edge_lengths, **kwargs):
         domain_metadata=domain_metadata,
         gradation=_ms_gradation,
         enforce_min=bool(kwargs.get("enforce_min", True)),
+        # smooth_outer.m masks the paste by each nest's boubox
+        # POLYGON — pass the domain rings so polygon nests do not
+        # leak fine sizes across their rectangle hulls
+        boubox_rings=[getattr(d, "boubox_ring", None)
+                      for d in domains],
     )
 
     _sanitize_smoothed_sizing_grids(edge_lengths_smoothed)
